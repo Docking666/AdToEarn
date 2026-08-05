@@ -1,0 +1,33 @@
+version: "3.8"
+
+services:
+  adtoearn:
+    build: .
+    image: adtoearn:latest
+    container_name: adtoearn
+    ports:
+      - "8765:8765"
+    volumes:
+      # 持久化 API 密钥配置与上传文件
+      - adtoearn_config:/app/config
+      - adtoearn_uploads:/app/uploads
+      - adtoearn_cache:/app/cache
+    environment:
+      # 模型密钥（生产建议用 env_file 或容器编排 secret）
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+      - OPENAI_BASE_URL=${OPENAI_BASE_URL:-https://api.openai.com/v1}
+      - OPENAI_MODEL=${OPENAI_MODEL:-gpt-4o}
+      - OPENAI_VISION_MODEL=${OPENAI_VISION_MODEL:-gpt-4o}
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8765/health')"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+volumes:
+  adtoearn_config:
+  adtoearn_uploads:
+  adtoearn_cache:

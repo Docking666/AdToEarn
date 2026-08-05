@@ -1,0 +1,33 @@
+# Python
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+
+# 运行数据
+uploads/
+cache/
+config/api_config.json
+
+# 环境
+.env
+.env.local
+
+# IDE/OS
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+
+# Git
+.git/
+.gitignore
+
+# 测试产物
+dist/
+scripts/
+skill/
+docs/
+REQUIREMENTS.md
+README*.md
+LICENSE
