@@ -226,6 +226,60 @@ generator:
     min_keywords: 5
 
 # ------------------------------------------------------------
+# 广告账户审计 (Audit)
+# 对投放效果进行可视化数据分析：总览指标 / 时间趋势 / 账户对比 / 异常风险
+# 数据来源：用户通过 WebUI 导入（CSV/JSON）或生成示例数据（标注 sample=true）
+# 字段含义（日粒度投放记录 DailyRecord）：
+#   account          账户名（如：主账户-品牌）
+#   date             投放日期 YYYY-MM-DD
+#   impressions      曝光量
+#   clicks           点击量
+#   conversions      转化量
+#   spend            花费（元）
+#   conversion_value 转化价值（元，可选，用于计算 ROAS）
+# 派生指标：CTR=点击/曝光 · CVR=转化/点击 · CPC=花费/点击 · CPM=花费/曝光*1000
+#          CPA=花费/转化 · ROAS=转化价值/花费
+# ------------------------------------------------------------
+audit:
+  # 数据持久化文件（运行时生成，不入库）
+  data_file: "cache/audit_data.json"
+  # 示例数据生成参数（用于演示/测试，前端标注「示例数据」）
+  sample:
+    days: 30
+    accounts:
+      - "主账户-品牌"
+      - "搜索-精准"
+      - "信息流-素材测试"
+      - "海外-Meta"
+    base_impressions: 80000
+    base_spend: 800
+    min_conversions: 4
+  # 异常检测阈值
+  anomaly:
+    # 花费较前 7 日均值超过该倍数 → 花费突增
+    spend_surge_ratio: 3.0
+    # CTR 低于前 7 日均值该比例 → 点击率骤降
+    ctr_drop_ratio: 0.5
+    # 账户 CPA 高于整体均值该倍数 → 获客成本过高
+    cpa_surge_ratio: 2.0
+    # 连续有花费但无转化的天数 → 转化中断
+    no_conversion_days: 3
+    # ROAS 低于该值 → 投入产出比警戒
+    roas_warn_below: 1.0
+    # 单日曝光低于该值 → 曝光不足提示
+    min_impressions: 10000
+    # 样本天数少于该值 → 数据样本不足提示
+    min_sample_days: 14
+  # 健康评分扣分（参照 Claude-ads：基础 100，按严重度扣分）
+  health_score:
+    critical: -25
+    high: -15
+    medium: -8
+    low: -3
+    grades: ["A", "B", "C", "D"]
+    grade_thresholds: [90, 75, 60, 0]
+
+# ------------------------------------------------------------
 # LLM 大模型提供商模板 (经 LiteLLM 网关统一调用)
 # 密钥与自定义端点通过 WebUI 写入 config/api_config.json
 # custom 为自定义入口：任意 OpenAI 兼容接口（api_base + api_key + model）

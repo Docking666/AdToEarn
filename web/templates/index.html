@@ -514,6 +514,123 @@
                 </div>
             </section>
 
+            <!-- ========== 广告账户审计 ========== -->
+            <section v-if="currentPage === 'audit'" class="page active">
+                <header class="page-header">
+                    <h1>广告账户审计</h1>
+                    <p>投放效果可视化分析：总览指标 · 时间趋势 · 账户对比 · 异常风险（参照 Claude-ads 设计思路）</p>
+                </header>
+
+                <!-- 数据导入工具条 -->
+                <div class="audit-toolbar">
+                    <input ref="auditCsvInput" type="file" class="hidden-input" accept=".csv,.json" @change="onAuditFileSelect">
+                    <button class="btn" @click="auditCsvInput.click()">📥 导入 CSV/JSON</button>
+                    <button class="btn" :disabled="auditLoading.sample" @click="generateAuditSample">
+                        {{ auditLoading.sample ? '生成中…' : '✨ 生成示例数据' }}
+                    </button>
+                    <button class="btn danger" :disabled="!auditMeta.record_count" @click="clearAuditData">🗑 清空数据</button>
+                    <span v-if="auditMeta.has_sample" class="badge mock">含示例数据</span>
+                    <span class="audit-meta-text" v-if="auditMeta.record_count">
+                        {{ auditMeta.record_count }} 条记录 · {{ auditMeta.accounts.length }} 个账户
+                        <template v-if="auditMeta.date_min"> · {{ auditMeta.date_min }} ~ {{ auditMeta.date_max }}</template>
+                    </span>
+                </div>
+
+                <!-- 筛选工具栏 -->
+                <div v-if="auditMeta.record_count" class="toolbar audit-filterbar">
+                    <select v-model="auditFilter.account" class="field select">
+                        <option value="">全部账户</option>
+                        <option v-for="a in auditMeta.accounts" :key="a" :value="a">{{ a }}</option>
+                    </select>
+                    <select v-model="auditFilter.days" class="field select">
+                        <option :value="0">全部时间</option>
+                        <option :value="7">近 7 天</option>
+                        <option :value="14">近 14 天</option>
+                        <option :value="30">近 30 天</option>
+                        <option :value="90">近 90 天</option>
+                    </select>
+                    <button class="btn primary" @click="loadAuditAll">应用筛选</button>
+                </div>
+
+                <!-- 空数据引导 -->
+                <div v-if="!auditMeta.record_count" class="audit-empty">
+                    <p>📊 暂无投放数据</p>
+                    <p class="hint">导入广告平台导出的 CSV（列：account, date, impressions, clicks, conversions, spend, conversion_value）或 JSON 数组；也可点击「生成示例数据」快速体验审计效果</p>
+                </div>
+
+                <template v-else>
+                    <!-- 健康评分 + 关键指标 -->
+                    <div class="audit-health-row">
+                        <div class="audit-health-card">
+                            <div class="audit-health-score" :class="'grade-' + auditSummary.health?.grade">{{ auditSummary.health?.score }}</div>
+                            <div class="audit-health-grade">健康评分 <b>{{ auditSummary.health?.grade }}</b></div>
+                            <div class="audit-health-sub">异常 {{ auditSummary.anomaly_count }} 项</div>
+                        </div>
+                        <div class="audit-metrics-grid">
+                            <div v-for="m in auditMetricCards" :key="m.key" class="audit-metric-card" :class="m.tone">
+                                <div class="audit-metric-label">{{ m.label }}</div>
+                                <div class="audit-metric-value">{{ m.value }}</div>
+                                <div class="audit-metric-sub">{{ m.sub }}</div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- 趋势图 -->
+                    <div class="audit-chart-card">
+                        <div class="audit-chart-head">
+                            <h3>投放趋势（按日）</h3>
+                            <div class="audit-chart-tabs">
+                                <button class="tab-btn" :class="{ active: auditChartType === 'volume' }" @click="switchAuditChart('volume')">曝光/点击/转化</button>
+                                <button class="tab-btn" :class="{ active: auditChartType === 'cost' }" @click="switchAuditChart('cost')">花费/价值</button>
+                                <button class="tab-btn" :class="{ active: auditChartType === 'efficiency' }" @click="switchAuditChart('efficiency')">CTR/CPA/ROAS</button>
+                            </div>
+                        </div>
+                        <div ref="auditTrendChart" class="audit-chart" :style="{ height: '320px' }"></div>
+                    </div>
+
+                    <!-- 账户对比 -->
+                    <div class="audit-chart-card">
+                        <div class="audit-chart-head"><h3>账户维度对比</h3></div>
+                        <div ref="auditAccountChart" class="audit-chart" :style="{ height: '300px' }"></div>
+                        <div class="audit-account-table">
+                            <table>
+                                <thead><tr><th>账户</th><th>曝光</th><th>点击</th><th>转化</th><th>花费</th><th>CTR</th><th>CPA</th><th>ROAS</th></tr></thead>
+                                <tbody>
+                                    <tr v-for="a in auditAccounts" :key="a.account">
+                                        <td>{{ a.account }}</td>
+                                        <td>{{ fmtNum(a.impressions) }}</td>
+                                        <td>{{ fmtNum(a.clicks) }}</td>
+                                        <td>{{ fmtNum(a.conversions) }}</td>
+                                        <td>¥{{ fmtMoney(a.spend) }}</td>
+                                        <td>{{ a.ctr }}%</td>
+                                        <td>¥{{ fmtMoney(a.cpa) }}</td>
+                                        <td>{{ a.roas }}</td>
+                                    </tr>
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+
+                    <!-- 异常/风险提示 -->
+                    <div class="audit-chart-card">
+                        <div class="audit-chart-head">
+                            <h3>异常与风险提示（{{ auditAnomalies.length }} 项）</h3>
+                        </div>
+                        <div v-if="!auditAnomalies.length" class="audit-ok-state">✓ 未发现明显异常，账户投放状态健康</div>
+                        <div v-for="(a, i) in auditAnomalies" :key="i" class="audit-anomaly" :class="'sev-' + a.severity">
+                            <div class="audit-anomaly-head">
+                                <span class="badge" :class="severityBadge(a.severity)">{{ severityLabel(a.severity) }}</span>
+                                <strong>{{ a.title }}</strong>
+                                <span v-if="a.account" class="tag-chip">{{ a.account }}</span>
+                                <span v-if="a.date" class="audit-anomaly-date">{{ a.date }}</span>
+                            </div>
+                            <p class="audit-anomaly-desc">{{ a.description }}</p>
+                            <p class="audit-anomaly-sug">💡 {{ a.suggestion }}</p>
+                        </div>
+                    </div>
+                </template>
+            </section>
+
             <!-- ========== 悬浮运行日志窗 (B2) ========== -->
             <div class="log-fab" :class="{ expanded: logPanel.expanded }" ref="logFabRef">
                 <!-- 收起态：悬浮圆点 -->
@@ -549,6 +666,7 @@
     </div>
 
     <script src="https://cdn.jsdelivr.net/npm/vue@3.4.21/dist/vue.global.prod.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/echarts@5.5.0/dist/echarts.min.js"></script>
     <script src="/static/app.js"></script>
 </body>
 </html>

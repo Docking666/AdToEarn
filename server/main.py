@@ -25,6 +25,7 @@ from .modules.generator import generator
 from .modules.api_config import api_config_manager, DOMAIN_LLM, DOMAIN_VIDEO
 from .modules.app_logger import log_collector, LEVEL_INFO, EVENT_SYSTEM
 from .modules.web_search import web_search
+from .modules.audit import audit_service, SEV_CRITICAL, SEV_HIGH, SEV_MEDIUM, SEV_LOW
 
 # 创建 FastAPI 应用
 app = FastAPI(
@@ -110,6 +111,17 @@ class WebSearchRequest(BaseModel):
     days: int = 0
     domains: list = []
     max_results: int = 0
+
+
+class AuditImportRequest(BaseModel):
+    """审计数据导入请求（JSON 记录数组）"""
+    records: list = []
+
+
+class AuditImportFileRequest(BaseModel):
+    """审计数据导入请求（文本内容 + 格式）"""
+    content: str = ""
+    format: str = "csv"  # csv | json
 
 
 # ==================== 页面路由 ====================
@@ -438,6 +450,83 @@ async def complete_workflow(
         "generation_result": generation_result,
         "completed_at": datetime.now().isoformat(),
     }
+
+
+# ==================== 广告账户审计 API ====================
+
+@app.get("/api/audit/meta")
+async def audit_meta():
+    """审计数据元信息（记录数/账户列表/时间范围/指标定义）"""
+    return audit_service.get_meta()
+
+
+@app.get("/api/audit/summary")
+async def audit_summary(account: Optional[str] = None, days: Optional[int] = None):
+    """投放数据总览：关键指标 + 健康评分 + 异常统计"""
+    return audit_service.summary(account=account, days=days)
+
+
+@app.get("/api/audit/trend")
+async def audit_trend(account: Optional[str] = None, days: Optional[int] = None):
+    """时间维度趋势：按日聚合"""
+    return {"trend": audit_service.trend(account=account, days=days)}
+
+
+@app.get("/api/audit/accounts")
+async def audit_accounts(days: Optional[int] = None):
+    """账户维度数据对比"""
+    return {"accounts": audit_service.by_account(days=days)}
+
+
+@app.get("/api/audit/anomalies")
+async def audit_anomalies(account: Optional[str] = None):
+    """异常 / 风险发现项（分级）"""
+    records = audit_service._filter(account=account) if account else None
+    return {"anomalies": audit_service.detect_anomalies(records)}
+
+
+@app.get("/api/audit/records")
+async def audit_records(account: Optional[str] = None, days: Optional[int] = None, limit: int = 500):
+    """原始投放记录（分页查看）"""
+    records = audit_service._filter(account=account, days=days)
+    return {"records": records[-limit:], "total": len(records)}
+
+
+@app.post("/api/audit/import")
+async def audit_import(req: AuditImportRequest):
+    """导入投放记录（JSON 数组）"""
+    result = audit_service.import_records(req.records, source="json")
+    return result
+
+
+@app.post("/api/audit/import/file")
+async def audit_import_file(req: AuditImportFileRequest):
+    """导入投放数据（CSV/JSON 文本内容）"""
+    if not req.content.strip():
+        raise HTTPException(status_code=400, detail="内容不能为空")
+    try:
+        if req.format == "json":
+            records = audit_service.parse_json(req.content.encode("utf-8"))
+        else:
+            records = audit_service.parse_csv(req.content.encode("utf-8"))
+    except (ValueError, json.JSONDecodeError) as e:
+        raise HTTPException(status_code=400, detail=f"解析失败: {e}")
+    result = audit_service.import_records(records, source=req.format)
+    if not result.get("ok"):
+        raise HTTPException(status_code=400, detail=result.get("errors", ["导入失败"]))
+    return result
+
+
+@app.post("/api/audit/sample")
+async def audit_sample():
+    """生成示例投放数据（标注 sample=true，演示/测试用）"""
+    return audit_service.generate_sample()
+
+
+@app.delete("/api/audit/data")
+async def audit_clear():
+    """清空审计数据"""
+    return audit_service.clear()
 
 
 # ==================== 启动事件 ====================

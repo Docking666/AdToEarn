@@ -165,6 +165,27 @@ class Settings:
         """风格模板 (来自 spec)"""
         return spec.get("styles", default={})
 
+    # ------- 广告账户审计 -------
+    @property
+    def audit_data_file(self) -> Path:
+        """审计数据持久化文件"""
+        return BASE_DIR / spec.get("audit", "data_file", default="cache/audit_data.json")
+
+    @property
+    def audit_sample(self) -> dict:
+        """示例数据生成参数 (来自 spec)"""
+        return spec.get("audit", "sample", default={})
+
+    @property
+    def audit_anomaly(self) -> dict:
+        """异常检测阈值 (来自 spec)"""
+        return spec.get("audit", "anomaly", default={})
+
+    @property
+    def audit_health(self) -> dict:
+        """健康评分配置 (来自 spec)"""
+        return spec.get("audit", "health_score", default={})
+
     # ------- 反向解析 -------
     video_frames: int = spec.get("reverse_parser", "video_frames", default=4)
     analysis_prompt_path: Path = BASE_DIR / spec.get(

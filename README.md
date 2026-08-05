@@ -1,3 +1,14 @@
+---
+title: AdToEarn
+emoji: 🚀
+colorFrom: indigo
+colorTo: purple
+sdk: docker
+app_port: 7860
+pinned: false
+---
+<!-- ↑ Hugging Face Spaces 元数据（Docker SDK / 端口 7860），对 GitHub 渲染无影响；本地部署请忽略 -->
+
 # AdToEarn — AI 驱动的广告素材智能工作台
 
 > Let's use AI to Earn! 🚀
@@ -16,6 +27,7 @@ AdToEarn 借鉴 [AiToEarn](https://github.com/yikart/AiToEarn)（AI 内容营销
 - **素材反向解析**：上传图片/视频，AI 抽帧分析提取关键词与生成 Prompt；
 - **图文创意方案**：8 种风格，LLM 一键产出标题/文案/行动号召/AI Prompt/配色/布局；
 - **视频素材生成**：直接调用 Seedance、MiniMax H3 等视频生成 API；
+- **📊 广告账户审计**：投放效果可视化分析（参照 Claude-ads 设计思路）—— 健康评分、时间趋势、账户对比、异常风险提示；支持 CSV/JSON 数据导入 + 示例数据生成；
 - **可视化 API 配置**：大模型（LLM）+ 视频双域，支持自定义提供商，无需修改任何配置文件；
 - **悬浮运行日志窗**：SSE 实时推送 LLM 调用/视频任务/采集状态，运行过程全透明。
 
@@ -32,6 +44,7 @@ AdToEarn 借鉴 [AiToEarn](https://github.com/yikart/AiToEarn)（AI 内容营销
 | 🔍 素材反向解析 | 图片/视频 → 视觉分析 → 10-15 关键词 + 中英文 AI Prompt | LLM 视觉 + 视频抽帧 |
 | 🎨 图文创意方案 | 8 种风格 → 标题/描述/行动号召/AI Prompt/配色/布局 + 风格迁移分析 | LLM |
 | 🎬 视频素材生成 | 素材描述 → Seedance / MiniMax / 自定义视频 API → 生成+播放 | 异步任务轮询 |
+| 📊 广告账户审计 | 投放效果可视化分析：健康评分 A/B/C/D、时间趋势、账户对比、4 类异常风险检测（花费突增 / CTR 骤降 / 转化中断 / ROAS 过低） | ECharts 图标 + SDD 驱动规则 |
 | ⚙️ 可视化 API 配置 | LLM + 视频双域；8 大 LLM 提供商 + 自定义；连接测试/保存/编辑/删除 | WebUI |
 | 📋 悬浮运行日志 | 可拖拽、级别过滤、清空；SSE 实时推送 | EventSource |
 | 🚀 一键启动 | 自动装依赖 + Playwright + 启动服务 + 打开浏览器 | Python venv |
@@ -213,6 +226,31 @@ AdToEarn/
 | GET | `/api/logs?limit=200&min_level=info` | 最近日志（级别过滤）|
 | GET | `/api/logs/stream` | SSE 实时日志流 |
 
+### 广告账户审计
+
+| 方法 | 路径 | 说明 |
+|------|------|------|
+| GET | `/api/audit/meta` | 数据元信息（记录数/账户/时间范围/指标定义）|
+| GET | `/api/audit/summary?account=&days=` | 投放总览（关键指标 + 健康评分 + 异常统计）|
+| GET | `/api/audit/trend?account=&days=` | 时间趋势（按日聚合）|
+| GET | `/api/audit/accounts?days=` | 账户维度对比 |
+| GET | `/api/audit/anomalies?account=` | 异常/风险发现项（分级）|
+| GET | `/api/audit/records?account=&days=&limit=` | 原始记录分页 |
+| POST | `/api/audit/import` | JSON 记录数组导入 |
+| POST | `/api/audit/import/file` | CSV/JSON 文本导入（请求体含 content + format）|
+| POST | `/api/audit/sample` | 生成示例数据（标注 sample=true）|
+| DELETE | `/api/audit/data` | 清空数据 |
+
+**数据字段（CSV 列名）：** `account, date, impressions, clicks, conversions, spend, conversion_value`
+**派生指标：** CTR（点击率）/ CVR（转化率）/ CPC（单次点击成本）/ CPM（千次曝光成本）/ CPA（获客成本）/ ROAS（投产比）
+**异常检测规则**（阈值可在 `config/spec.yaml` 的 `audit.anomaly` 调整）：
+- 花费突增（`spend_surge_ratio`）：某账户当日花费 ≥ 前 7 日日均 × 阈值
+- 点击率骤降（`ctr_drop_ratio`）：曝光足量时 CTR 低于前 7 日均值 × 比例
+- 连续花费无转化（`no_conversion_days`）：某账户连续 N 天有花费但转化量 0
+- 投产比低于警戒线（`roas_warn_below`）：某账户 ROAS < 阈值
+- 获客成本过高（`cpa_surge_ratio`）：某账户 CPA > 整体均值 × 倍数
+- 样本不足 / 曝光不足（提示级）
+
 ---
 
 ## 🧠 架构说明
@@ -227,6 +265,17 @@ AdToEarn/
                                 │
                      config/spec.yaml (SDD 唯一配置源)
                      config/api_config.json (WebUI 可视化密钥)
+
+┌──────────────────────────────────────────────────────────────────────────┐
+│           📊 广告账户审计（参照 Claude-ads 健康评分设计）                │
+│  ┌────────────┐  ┌────────────┐  ┌────────────┐  ┌──────────────┐         │
+│  │ 健康评分    │  │ 时间趋势    │  │ 账户对比    │  │ 异常风险提示  │        │
+│  │ 0-100 +    │  │ ECharts    │  │ 柱状图+表  │  │ 高/中/低分级  │        │
+│  │ A/B/C/D    │  │ 多指标     │  │ ROAS/CPA   │  │ 4 类检测规则  │        │
+│  └────────────┘  └────────────┘  └────────────┘  └──────────────┘         │
+│  数据来源：CSV 导入（兼容中英文列名、千分位、YYYY-MM-DD / YYYY/MM/DD）│
+│        + 示例数据生成（注入可控异常模式，便于演示/测试）                │
+└──────────────────────────────────────────────────────────────────────────┘
 ```
 
 ### 采集双通道策略

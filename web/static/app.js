@@ -14,6 +14,7 @@ createApp({
       { id: "parser", label: "素材解析", icon: "M15 10l4.55-2.2a1 1 0 011.45.9v6.6a1 1 0 01-1.45.9L15 14M5 4h10a2 2 0 012 2v12a2 2 0 01-2 2H5a2 2 0 01-2-2V6a2 2 0 012-2z" },
       { id: "generator", label: "素材生成", icon: "M12 3v3m0 12v3M3 12h3m12 0h3M5.6 5.6l2.1 2.1m8.6 8.6l2.1 2.1m0-12.8l-2.1 2.1M7.7 16.3l-2.1 2.1M12 8a4 4 0 100 8 4 4 0 000-8z" },
       { id: "workflow", label: "一键工作流", icon: "M4 4v5h5M20 20v-5h-5M4 12a8 8 0 0114-5M20 12a8 8 0 01-14 5" },
+      { id: "audit", label: "账户审计", icon: "M3 3v18h18M7 15l3-4 3 3 5-7" },
       { id: "apiconfig", label: "API 配置", icon: "M12 15a3 3 0 100-6 3 3 0 000 6zm7-3a7 7 0 11-14 0 7 7 0 0114 0z" },
     ];
     const currentPage = ref("dashboard");
@@ -280,6 +281,197 @@ createApp({
       } catch (e) {}
     }
     loadRecentTasks();
+
+    // ===== 广告账户审计 =====
+    const auditCsvInput = ref(null);
+    const auditMeta = reactive({ record_count: 0, accounts: [], date_min: null, date_max: null, has_sample: false });
+    const auditSummary = ref(null);
+    const auditTrend = ref([]);
+    const auditAccounts = ref([]);
+    const auditAnomalies = ref([]);
+    const auditLoading = reactive({ sample: false, clear: false, import: false });
+    const auditFilter = reactive({ account: "", days: 0 });
+    const auditChartType = ref("volume");
+    const auditTrendChart = ref(null);
+    const auditAccountChart = ref(null);
+    let auditTrendChartInst = null;
+    let auditAccountChartInst = null;
+
+    const auditMetricCards = computed(() => {
+      const m = auditSummary.value?.metrics;
+      if (!m) return [];
+      return [
+        { key: "impressions", label: "曝光量", value: fmtNum(m.impressions), sub: `${fmtNum(m.impressions / Math.max(1, m.day_count))}/日`, tone: "" },
+        { key: "clicks", label: "点击量", value: fmtNum(m.clicks), sub: `CTR ${m.ctr}%`, tone: "" },
+        { key: "conversions", label: "转化量", value: fmtNum(m.conversions), sub: `CVR ${m.cvr}%`, tone: "" },
+        { key: "spend", label: "总花费", value: "¥" + fmtMoney(m.spend), sub: `CPC ¥${fmtMoney(m.cpc)} · CPM ¥${fmtMoney(m.cpm)}`, tone: "" },
+        { key: "cpa", label: "获客成本 CPA", value: "¥" + fmtMoney(m.cpa), sub: m.cpa > 0 ? "越低越好" : "无转化", tone: m.cpa > 0 && m.cpa > 50 ? "warn" : "good" },
+        { key: "roas", label: "投产比 ROAS", value: m.roas, sub: m.roas > 0 ? "越高越好" : "无价值数据", tone: m.roas >= 1 ? "good" : "warn" },
+        { key: "conv_value", label: "转化价值", value: "¥" + fmtMoney(m.conversion_value), sub: `${m.account_count} 个账户 · ${m.day_count} 天`, tone: "" },
+        { key: "records", label: "数据记录", value: fmtNum(m.record_count), sub: `账户: ${auditMeta.accounts.join(" / ") || "-"}`, tone: "" },
+      ];
+    });
+
+    function fmtNum(n) {
+      if (n === null || n === undefined) return "0";
+      return Number(n).toLocaleString("zh-CN", { maximumFractionDigits: 0 });
+    }
+    function fmtMoney(n) {
+      if (n === null || n === undefined) return "0.00";
+      return Number(n).toLocaleString("zh-CN", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+    }
+    const severityLabel = (s) => auditSeverityLabels[s] || s;
+    const severityBadge = (s) => ({ critical: "failed", high: "failed", medium: "mock", low: "" }[s] || "");
+    const auditSeverityLabels = { critical: "严重", high: "高危", medium: "中等", low: "提示" };
+
+    async function loadAuditMeta() {
+      try {
+        const d = await (await fetch("/api/audit/meta")).json();
+        auditMeta.record_count = d.record_count || 0;
+        auditMeta.accounts = d.accounts || [];
+        auditMeta.date_min = d.date_min;
+        auditMeta.date_max = d.date_max;
+        auditMeta.has_sample = !!d.has_sample;
+      } catch (e) {}
+    }
+
+    async function loadAuditAll() {
+      const params = new URLSearchParams();
+      if (auditFilter.account) params.set("account", auditFilter.account);
+      if (auditFilter.days) params.set("days", auditFilter.days);
+      const qs = params.toString() ? "?" + params : "";
+      try {
+        const [summary, trend, accounts, anomalies] = await Promise.all([
+          fetch(`/api/audit/summary${qs}`).then(r => r.json()),
+          fetch(`/api/audit/trend${qs}`).then(r => r.json()),
+          fetch(`/api/audit/accounts${qs}`).then(r => r.json()),
+          fetch(`/api/audit/anomalies${qs}`).then(r => r.json()),
+        ]);
+        auditSummary.value = summary;
+        auditTrend.value = trend.trend || [];
+        auditAccounts.value = accounts.accounts || [];
+        auditAnomalies.value = anomalies.anomalies || [];
+        renderAuditCharts();
+      } catch (e) { console.error(e); }
+    }
+
+    function switchAuditChart(type) {
+      auditChartType.value = type;
+      renderAuditCharts();
+    }
+
+    function renderAuditCharts() {
+      if (!window.echarts) return;
+      // 趋势图
+      if (auditTrendChart.value) {
+        if (!auditTrendChartInst) auditTrendChartInst = echarts.init(auditTrendChart.value);
+        const dates = auditTrend.value.map(t => t.date);
+        const type = auditChartType.value;
+        const series = type === "volume" ? [
+          { name: "曝光量", type: "bar", data: auditTrend.value.map(t => t.impressions), itemStyle: { color: "#6366f1" } },
+          { name: "点击量", type: "line", smooth: true, data: auditTrend.value.map(t => t.clicks), itemStyle: { color: "#34d399" } },
+          { name: "转化量", type: "line", smooth: true, data: auditTrend.value.map(t => t.conversions), itemStyle: { color: "#fbbf24" } },
+        ] : type === "cost" ? [
+          { name: "花费", type: "bar", data: auditTrend.value.map(t => t.spend), itemStyle: { color: "#f87171" } },
+          { name: "转化价值", type: "line", smooth: true, data: auditTrend.value.map(t => t.conversion_value), itemStyle: { color: "#34d399" } },
+        ] : [
+          { name: "CTR(%)", type: "line", smooth: true, data: auditTrend.value.map(t => t.ctr), itemStyle: { color: "#60a5fa" } },
+          { name: "CPA(¥)", type: "line", smooth: true, data: auditTrend.value.map(t => t.cpa), itemStyle: { color: "#f87171" } },
+          { name: "ROAS", type: "line", smooth: true, data: auditTrend.value.map(t => t.roas), itemStyle: { color: "#34d399" } },
+        ];
+        auditTrendChartInst.setOption({
+          backgroundColor: "transparent",
+          tooltip: { trigger: "axis", backgroundColor: "#1e2230", borderColor: "rgba(255,255,255,.14)", textStyle: { color: "#e6e9f2" } },
+          legend: { textStyle: { color: "#9aa3b8" }, top: 0 },
+          grid: { left: 48, right: 16, top: 36, bottom: 24 },
+          xAxis: { type: "category", data: dates, axisLine: { lineStyle: { color: "rgba(255,255,255,.14)" } }, axisLabel: { color: "#9aa3b8" } },
+          yAxis: { type: "value", splitLine: { lineStyle: { color: "rgba(255,255,255,.06)" } }, axisLabel: { color: "#9aa3b8" } },
+          series,
+        }, true);
+      }
+      // 账户对比图
+      if (auditAccountChart.value) {
+        if (!auditAccountChartInst) auditAccountChartInst = echarts.init(auditAccountChart.value);
+        const accounts = auditAccounts.value;
+        auditAccountChartInst.setOption({
+          backgroundColor: "transparent",
+          tooltip: { trigger: "axis", backgroundColor: "#1e2230", borderColor: "rgba(255,255,255,.14)", textStyle: { color: "#e6e9f2" } },
+          legend: { textStyle: { color: "#9aa3b8" }, top: 0 },
+          grid: { left: 48, right: 16, top: 36, bottom: 24 },
+          xAxis: { type: "category", data: accounts.map(a => a.account), axisLine: { lineStyle: { color: "rgba(255,255,255,.14)" } }, axisLabel: { color: "#9aa3b8", interval: 0, rotate: accounts.length > 4 ? 20 : 0 } },
+          yAxis: { type: "value", splitLine: { lineStyle: { color: "rgba(255,255,255,.06)" } }, axisLabel: { color: "#9aa3b8" } },
+          series: [
+            { name: "花费(¥)", type: "bar", data: accounts.map(a => a.spend), itemStyle: { color: "#6366f1" }, barMaxWidth: 28 },
+            { name: "转化价值(¥)", type: "bar", data: accounts.map(a => a.conversion_value), itemStyle: { color: "#34d399" }, barMaxWidth: 28 },
+          ],
+        }, true);
+      }
+    }
+
+    function onAuditFileSelect(e) {
+      const file = e.target.files[0];
+      if (!file) return;
+      const reader = new FileReader();
+      reader.onload = async () => {
+        const fmt = file.name.toLowerCase().endsWith(".json") ? "json" : "csv";
+        auditLoading.import = true;
+        try {
+          const res = await fetch("/api/audit/import/file", {
+            method: "POST", headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ content: String(reader.result || ""), format: fmt }),
+          });
+          const d = await res.json();
+          if (d.ok) {
+            alert(`导入成功：${d.imported} 条记录` + (d.errors?.length ? `（${d.errors.length} 行错误）` : ""));
+            await refreshAudit();
+          } else {
+            alert("导入失败：" + JSON.stringify(d.errors || d.detail || d));
+          }
+        } catch (err) { alert("导入失败：" + err.message); }
+        finally { auditLoading.import = false; e.target.value = ""; }
+      };
+      reader.readAsText(file);
+    }
+
+    async function generateAuditSample() {
+      auditLoading.sample = true;
+      try {
+        const d = await (await fetch("/api/audit/sample", { method: "POST" })).json();
+        if (d.ok) { alert(`已生成 ${d.imported} 条示例数据（标注「含示例数据」）`); await refreshAudit(); }
+      } catch (err) { alert("生成失败：" + err.message); }
+      finally { auditLoading.sample = false; }
+    }
+
+    async function clearAuditData() {
+      if (!confirm("确定清空全部审计数据？此操作不可恢复。")) return;
+      auditLoading.clear = true;
+      try {
+        await fetch("/api/audit/data", { method: "DELETE" });
+        auditSummary.value = null;
+        auditTrend.value = [];
+        auditAccounts.value = [];
+        auditAnomalies.value = [];
+        await loadAuditMeta();
+      } catch (e) {}
+      finally { auditLoading.clear = false; }
+    }
+
+    async function refreshAudit() {
+      await loadAuditMeta();
+      if (auditMeta.record_count) await loadAuditAll();
+    }
+
+    // 页面切换 / 窗口尺寸变化时渲染图表
+    watch(currentPage, (p) => {
+      if (p === "audit") {
+        refreshAudit();
+        setTimeout(renderAuditCharts, 100);
+      }
+    });
+    window.addEventListener("resize", () => {
+      auditTrendChartInst?.resize();
+      auditAccountChartInst?.resize();
+    });
 
     // ===== 采集 =====
     const scrapeMode = ref("web");  // web | playwright
@@ -552,6 +744,11 @@ createApp({
       activeProviders, activeConfigs, activeProviderMeta, testing, saving, testResult,
       switchConfigDomain, onProviderSelect, editConfig, testConnection, saveConfig, deleteConfig,
       wfInput, wfDragOver, wfFile, wfRunning, wfResult, wfStep, wfSteps, wfStepState, handleWfDrop, runWorkflow,
+      // 广告账户审计
+      auditCsvInput, auditMeta, auditSummary, auditTrend, auditAccounts, auditAnomalies,
+      auditLoading, auditFilter, auditChartType, auditTrendChart, auditAccountChart,
+      auditMetricCards, severityLabel, severityBadge, fmtNum, fmtMoney,
+      loadAuditAll, switchAuditChart, onAuditFileSelect, generateAuditSample, clearAuditData,
       // 悬浮日志
       logPanel, logBody, filteredLogs, logFabRef,
       toggleLogPanel, toggleLogFilter, clearLogs,
