@@ -1,0 +1,339 @@
+# ============================================================
+# AdToEarn SDD 规范配置 (Spec-Driven Development)
+# 所有配置项、路径、参数统一在此管理，禁止在代码中硬编码
+# ============================================================
+
+app:
+  name: "AdToEarn WebUI"
+  version: "2.0.0"
+  description: "广告素材采集 · 反向解析 · 风格迁移生成"
+
+# 调试配置
+debug:
+  # Mock 调试开关：默认关闭。关闭时未配置 API 直接返回错误与配置引导；
+  # 开启时使用模拟数据（输出带「模拟数据」标识）
+  mock_enabled: false
+
+server:
+  host: "127.0.0.1"
+  port: 8765
+
+paths:
+  base_dir: "."
+  upload_dir: "uploads"
+  cache_dir: "cache"
+  web_dir: "web"
+  templates_dir: "web/templates"
+  static_dir: "web/static"
+
+upload:
+  max_file_size_mb: 100
+  allowed_image_extensions: [".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp"]
+  allowed_video_extensions: [".mp4", ".mov", ".avi", ".mkv", ".webm"]
+
+# ------------------------------------------------------------
+# AI 配置 (密钥通过 .env 注入, spec 只定义行为参数)
+# ------------------------------------------------------------
+ai:
+  # OpenAI 兼容接口
+  base_url_env: "OPENAI_BASE_URL"
+  api_key_env: "OPENAI_API_KEY"
+  text_model_env: "OPENAI_MODEL"
+  vision_model_env: "OPENAI_VISION_MODEL"
+  defaults:
+    base_url: "https://api.openai.com/v1"
+    text_model: "gpt-4o"
+    vision_model: "gpt-4o"
+  generation:
+    temperature: 0.8
+    max_tokens: 3000
+  vision:
+    temperature: 0.4
+    max_tokens: 2500
+  analysis:
+    temperature: 0.4
+    max_tokens: 2000
+  copywriting:
+    temperature: 0.9
+  keyword:
+    temperature: 0.5
+
+# ------------------------------------------------------------
+# 数据采集 (Playwright)
+# ------------------------------------------------------------
+scraper:
+  headless: true
+  timeout_ms: 30000
+  viewport:
+    width: 1920
+    height: 1080
+  locale: "zh-CN"
+  user_agent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+  keyword_extraction:
+    min_len: 2
+    max_len: 4
+  sources:
+    youmiyoushu:
+      name: "有米有数"
+      url: "https://www.youmi.net"
+      search_url: "https://www.youmi.net/creative/search"
+      strategy: "url"
+      item_selector: [".creative-item", ".ad-card", ".result-item", '[class*="creative"]']
+      title_selector: [".title", ".ad-title", "h3", "h4"]
+      desc_selector: [".desc", ".description", "p"]
+      tags_selector: [".tag", ".label", '[class*="tag"]']
+      stats_selector: [".stat", ".metric", '[class*="data"]']
+      thumbnail_selector: ["img"]
+    appgrowing:
+      name: "AppGrowing"
+      url: "https://www.appgrowing.cn"
+      search_url: "https://www.appgrowing.cn/search"
+      strategy: "auto"
+      search_input_selector: "input[type='text']"
+      search_button_selector: "button"
+      item_selector: [".creative-item", ".ad-card", ".result-item", '[class*="creative"]']
+      title_selector: [".title", ".ad-title", "h3", "h4"]
+      desc_selector: [".desc", ".description", "p"]
+      tags_selector: [".tag", ".label", '[class*="tag"]']
+      stats_selector: [".stat", ".metric", '[class*="data"]']
+      thumbnail_selector: ["img"]
+    admetrics:
+      name: "广告查查"
+      url: "https://www.admetrics.cn"
+      search_url: "https://www.admetrics.cn/search"
+      strategy: "url"
+      item_selector: [".creative-item", ".ad-card", ".result-item", '[class*="creative"]']
+      title_selector: [".title", ".ad-title", "h3", "h4"]
+      desc_selector: [".desc", ".description", "p"]
+      tags_selector: [".tag", ".label", '[class*="tag"]']
+      stats_selector: [".stat", ".metric", '[class*="data"]']
+      thumbnail_selector: ["img"]
+  # 采集行为
+  behavior:
+    # 页面加载后额外等待（毫秒），给 SPA 渲染时间
+    wait_after_load_ms: 2500
+    # 内容选择器等待超时（毫秒）
+    wait_selector_timeout_ms: 8000
+    # 重试次数
+    retry_count: 2
+    # 重试基础延迟（毫秒，指数退避: base * 2^attempt）
+    retry_base_delay_ms: 1500
+    # 随机延迟范围（毫秒），模拟人类行为
+    random_delay_min_ms: 500
+    random_delay_max_ms: 1500
+
+# ------------------------------------------------------------
+# 联网搜索 (LLM Web Search)
+# 通过 LLM 的 Web Search 工具获取公开索引的广告素材情报，
+# 天然规避目标站点登录墙与反爬。密钥复用「API 配置」的 LLM 密钥。
+# ------------------------------------------------------------
+websearch:
+  # 首选提供商: openai | anthropic
+  # 未配置该提供商密钥时自动尝试另一个，都无则报错引导
+  provider: "openai"
+  # OpenAI: web_search 工具上下文量 (low/medium/high)
+  search_context_size: "medium"
+  # 域名白名单（空=不限）；OpenAI 最多 20 个，Anthropic 支持
+  allowed_domains: []
+  # 单次搜索返回来源上限（提示词约束）
+  max_results: 10
+  # 默认时间范围（天），通过提示词注入日期区间
+  date_range_days: 7
+  # 并发上限（同时进行的搜索请求数）
+  concurrency: 3
+  # 429 限流重试
+  retry_count: 2
+  retry_base_delay_ms: 2000
+  # 成本熔断（美元，进程内累计，达阈值后拒绝新请求）
+  daily_budget_usd: 5.0
+
+# ------------------------------------------------------------
+# 素材风格模板 (迁移生成的目标风格)
+# ------------------------------------------------------------
+styles:
+  modern_minimal:
+    name: "现代简约"
+    description: "简洁干净的现代设计风格"
+    visual_style: "clean, minimalist, modern, white space, geometric shapes"
+    color_palette: ["#FFFFFF", "#F5F5F5", "#333333", "#007AFF"]
+    tone: "professional, clean, sophisticated"
+    reference: "Apple-style minimalism, lots of white space, simple typography"
+  guochao:
+    name: "国潮风"
+    description: "融合中国传统文化元素与现代设计"
+    visual_style: "chinese traditional elements, modern interpretation, bold colors, ink wash"
+    color_palette: ["#C8102E", "#FFD700", "#1A1A1A", "#F5E6D3"]
+    tone: "bold, cultural, trendy"
+    reference: "Chinese traditional patterns with modern graphic design, red and gold palette"
+  tech_future:
+    name: "科技未来"
+    description: "充满科技感与未来感的视觉风格"
+    visual_style: "futuristic, neon, cyberpunk, holographic, dark background"
+    color_palette: ["#0D1117", "#00D9FF", "#9D4EDD", "#FF006E"]
+    tone: "innovative, high-tech, sleek"
+    reference: "Cyberpunk aesthetic, neon lights, dark UI, holographic effects"
+  lifestyle:
+    name: "生活化"
+    description: "贴近日常生活的自然真实风格"
+    visual_style: "natural, candid, lifestyle photography, warm tones, authentic"
+    color_palette: ["#FDF6E3", "#D4A574", "#8B7355", "#3E3B32"]
+    tone: "warm, authentic, relatable"
+    reference: "Lifestyle photography, natural lighting, everyday scenes, warm color grading"
+  luxury:
+    name: "高端商务"
+    description: "奢华质感的高端品牌风格"
+    visual_style: "luxury, premium, elegant, gold accents, dark theme, sophisticated"
+    color_palette: ["#1A1A2E", "#C9A961", "#E8E8E8", "#16213E"]
+    tone: "premium, exclusive, refined"
+    reference: "Luxury brand aesthetic, gold and black, elegant typography, premium feel"
+  young_energy:
+    name: "年轻活力"
+    description: "充满活力与青春感的潮流风格"
+    visual_style: "vibrant, colorful, dynamic, playful, energetic, pop art"
+    color_palette: ["#FF6B6B", "#4ECDC4", "#FFE66D", "#1A535C"]
+    tone: "energetic, youthful, fun"
+    reference: "Pop art style, bright colors, dynamic compositions, playful elements"
+  warm_healing:
+    name: "温馨治愈"
+    description: "温暖治愈的柔和风格"
+    visual_style: "soft, warm, cozy, pastel colors, gentle lighting, healing"
+    color_palette: ["#FFF5E6", "#FFB5A7", "#FCD5CE", "#F8AD9D"]
+    tone: "gentle, comforting, warm"
+    reference: "Soft pastel colors, gentle lighting, cozy atmosphere, healing mood"
+  fast_pace:
+    name: "快节奏动感"
+    description: "节奏明快的动感风格"
+    visual_style: "dynamic, fast-paced, motion blur, bold typography, high contrast"
+    color_palette: ["#000000", "#FF3B30", "#FFCC00", "#FFFFFF"]
+    tone: "urgent, exciting, bold"
+    reference: "High-energy advertising, motion graphics, bold text, high contrast"
+
+# ------------------------------------------------------------
+# 反向解析参数
+# ------------------------------------------------------------
+reverse_parser:
+  video_frames: 4
+  video_frame_quality: 95
+  analysis_prompt_file: "config/prompts/analysis.txt"
+
+# ------------------------------------------------------------
+# 生成参数
+# ------------------------------------------------------------
+generator:
+  default_count: 3
+  max_count: 10
+  style_migration:
+    min_keywords: 5
+
+# ------------------------------------------------------------
+# LLM 大模型提供商模板 (经 LiteLLM 网关统一调用)
+# 密钥与自定义端点通过 WebUI 写入 config/api_config.json
+# custom 为自定义入口：任意 OpenAI 兼容接口（api_base + api_key + model）
+# 字段说明：
+#   default_base_url    官方 API 地址（切换提供商时前端自动填充）
+#   supports_vision     是否支持图片/视频分析（false 时前端隐藏视觉模型字段）
+#   vision_default_model 视觉模型默认值；留空 = 多模态（直接用对话模型即可，如 qwen-VL / GLM-4V）
+# ------------------------------------------------------------
+llm:
+  # 默认 LLM 配置 ID (未指定时按顺序取第一个 enabled)
+  default_provider: "openai"
+  providers:
+    openai:
+      name: "OpenAI"
+      litellm_prefix: "openai"
+      default_base_url: "https://api.openai.com/v1"
+      default_model: "gpt-4o"
+      vision_default_model: "gpt-4o"
+      supports_vision: true
+    anthropic:
+      name: "Anthropic (Claude)"
+      litellm_prefix: "anthropic"
+      default_base_url: "https://api.anthropic.com"
+      default_model: "claude-sonnet-4-20250514"
+      vision_default_model: "claude-sonnet-4-20250514"
+      supports_vision: true
+    google:
+      name: "Google Gemini"
+      litellm_prefix: "gemini"
+      default_base_url: "https://generativelanguage.googleapis.com"
+      default_model: "gemini-1.5-pro"
+      vision_default_model: "gemini-1.5-pro"
+      supports_vision: true
+    azure:
+      name: "Azure OpenAI"
+      litellm_prefix: "azure"
+      default_base_url: ""
+      default_model: "gpt-4o"
+      vision_default_model: "gpt-4o"
+      supports_vision: true
+    deepseek:
+      name: "DeepSeek"
+      litellm_prefix: "deepseek"
+      default_base_url: "https://api.deepseek.com"
+      default_model: "deepseek-chat"
+      vision_default_model: ""
+      supports_vision: false
+    qwen:
+      name: "通义千问 (DashScope)"
+      litellm_prefix: "openai"
+      default_base_url: "https://dashscope.aliyuncs.com/compatible-mode/v1"
+      default_model: "qwen-plus"
+      vision_default_model: "qwen-vl-max"
+      supports_vision: true
+      # 多模态模型列表：这些对话模型本身支持图片，无需单独配置视觉模型
+      multimodal_models: ["qwen-vl-max", "qwen-vl-plus", "qwen2.5-vl-72b-instruct"]
+    zhipu:
+      name: "智谱 GLM"
+      litellm_prefix: "openai"
+      default_base_url: "https://open.bigmodel.cn/api/paas/v4"
+      default_model: "glm-4-flash"
+      vision_default_model: "glm-4v-plus"
+      supports_vision: true
+      multimodal_models: ["glm-4v-plus", "glm-4v", "glm-4v-flash"]
+    custom:
+      name: "自定义 (OpenAI 兼容)"
+      litellm_prefix: "openai"
+      default_base_url: ""
+      default_model: ""
+      vision_default_model: ""
+      supports_vision: true
+      is_custom: true
+
+# ------------------------------------------------------------
+# 视频生成 (Video API 提供商模板)
+# 密钥、自定义端点等敏感配置通过 WebUI 写入 config/api_config.json
+# 此处仅定义提供商的默认端点、模型与字段映射
+# ------------------------------------------------------------
+video:
+  # 任务轮询参数
+  poll_interval_sec: 5
+  poll_max_attempts: 60
+  task_ttl_minutes: 120
+  providers:
+    seedance:
+      name: "Seedance (豆包·即梦)"
+      default_endpoint: "https://ark.cn-beijing.volces.com/api/v3"
+      default_model: "doubao-seedance-1-0-pro"
+      supported_durations: [5, 10]
+      supported_resolutions: ["480p", "720p", "1080p"]
+      duration_default: 5
+      resolution_default: "720p"
+    minimax:
+      name: "MiniMax H3 (海螺AI)"
+      default_endpoint: "https://api.minimax.chat/v1"
+      default_model: "Hailuo_03"
+      supported_durations: [6, 10]
+      supported_aspect_ratios: ["16:9", "9:16", "4:3", "3:4"]
+      duration_default: 6
+      aspect_ratio_default: "16:9"
+    custom:
+      name: "自定义视频 API"
+      default_endpoint: ""
+      default_model: ""
+      supported_durations: [5, 10]
+      supported_resolutions: ["480p", "720p", "1080p"]
+      supported_aspect_ratios: ["16:9", "9:16"]
+      duration_default: 5
+      resolution_default: "720p"
+      is_custom: true
+

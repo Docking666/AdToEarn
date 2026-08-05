@@ -1,0 +1,65 @@
+# ============================================================
+# AdToEarn Skill 配置 (SDD)
+# 所有可调参数集中于此；密钥优先从环境变量读取，此处为 fallback
+# ============================================================
+
+model:
+  # 提供商: openai | anthropic | deepseek | 其他 OpenAI 兼容
+  provider: "openai"
+  # 密钥: 留空则使用环境变量 OPENAI_API_KEY / ANTHROPIC_API_KEY
+  api_key: ""
+  base_url: ""
+  # 对话模型
+  model: "gpt-4o"
+  # 视觉模型（抽帧反推用；多模态模型可留空=用对话模型）
+  vision_model: "gpt-4o"
+
+websearch:
+  search_context_size: "medium"
+  # 域名白名单（空=不限）
+  allowed_domains: []
+  max_results: 10
+  date_range_days: 7
+  concurrency: 3
+  retry_count: 2
+  retry_base_delay_ms: 2000
+  # 成本熔断（美元/日）
+  daily_budget_usd: 5.0
+
+reverse_parse:
+  video_frames: 4
+
+# 风格模板（可增删；键为 --style 参数值）
+styles:
+  modern_minimal:
+    name: "现代简约"
+    desc: "简洁干净的现代设计风格"
+    visual: "clean, minimalist, white space"
+  guochao:
+    name: "国潮风"
+    desc: "融合中国传统文化元素与现代设计"
+    visual: "chinese traditional, bold colors"
+  tech_future:
+    name: "科技未来"
+    desc: "科技感与未来感视觉"
+    visual: "futuristic, neon, cyberpunk"
+  lifestyle:
+    name: "生活化"
+    desc: "贴近日常生活的自然真实风格"
+    visual: "natural, candid, warm tones"
+  luxury:
+    name: "高端商务"
+    desc: "奢华质感的高端品牌风格"
+    visual: "luxury, premium, gold accents"
+  young_energy:
+    name: "年轻活力"
+    desc: "充满活力与青春感"
+    visual: "vibrant, colorful, pop art"
+  warm_healing:
+    name: "温馨治愈"
+    desc: "温暖治愈的柔和风格"
+    visual: "soft, warm, pastel"
+  fast_pace:
+    name: "快节奏动感"
+    desc: "节奏明快的动感风格"
+    visual: "dynamic, motion, high contrast"

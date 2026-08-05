@@ -1,0 +1,554 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AdToEarn WebUI - 广告素材智能工作台</title>
+    <link rel="stylesheet" href="/static/styles.css">
+</head>
+<body>
+    <div id="app">
+        <!-- 左侧导航 -->
+        <aside class="sidebar">
+            <div class="logo">
+                <svg width="28" height="28" viewBox="0 0 28 28" fill="none">
+                    <rect x="2" y="2" width="24" height="24" rx="7" fill="url(#lg)"/>
+                    <path d="M8 14l4 4 8-8" stroke="white" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/>
+                    <defs><linearGradient id="lg" x1="0" y1="0" x2="28" y2="28"><stop stop-color="#6366f1"/><stop offset="1" stop-color="#8b5cf6"/></linearGradient></defs>
+                </svg>
+                <div class="logo-text">AdToEarn<span>WebUI</span></div>
+            </div>
+            <nav class="nav">
+                <a v-for="item in navItems" :key="item.id" class="nav-item"
+                   :class="{ active: currentPage === item.id }"
+                   @click="switchPage(item.id)">
+                    <svg class="nav-icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path :d="item.icon"/></svg>
+                    <span>{{ item.label }}</span>
+                </a>
+            </nav>
+            <div class="sidebar-footer">
+                <div class="ai-status" :class="{ online: health.ai_configured }">
+                    <span class="dot"></span>
+                    <span>{{ health.ai_configured ? 'AI 已连接' : 'AI 未配置 · 模拟模式' }}</span>
+                </div>
+                <div class="api-status">
+                    <span class="dot" :class="{ online: configuredLlmCount > 0 }"></span>
+                    <span>LLM: {{ configuredLlmCount > 0 ? '已配置' : '未配置' }} · 视频: {{ configuredVideoCount > 0 ? '已配置' : '未配置' }}</span>
+                </div>
+            </div>
+        </aside>
+
+        <!-- 主内容 -->
+        <main class="main">
+            <!-- ========== 工作台 ========== -->
+            <section v-if="currentPage === 'dashboard'" class="page active">
+                <header class="page-header">
+                    <h1>广告素材智能工作台</h1>
+                    <p>数据采集 → 素材解析 → 风格选定 → 素材生成，一站式创意流水线</p>
+                </header>
+                <div class="workflow">
+                    <div v-for="(step, i) in steps" :key="i" class="step-card" @click="switchPage(step.target)">
+                        <div class="step-num">{{ i + 1 }}</div>
+                        <div class="step-body">
+                            <h3>{{ step.title }}</h3>
+                            <p>{{ step.desc }}</p>
+                        </div>
+                        <svg v-if="i < steps.length - 1" class="step-arrow" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 18l6-6-6-6"/></svg>
+                    </div>
+                </div>
+                <div class="stats">
+                    <div class="stat-box">
+                        <div class="stat-value">{{ stats.keywords }}</div>
+                        <div class="stat-label">已采集关键词</div>
+                    </div>
+                    <div class="stat-box">
+                        <div class="stat-value">{{ stats.analyzed }}</div>
+                        <div class="stat-label">已解析素材</div>
+                    </div>
+                    <div class="stat-box">
+                        <div class="stat-value">{{ stats.generated }}</div>
+                        <div class="stat-label">已生成方案</div>
+                    </div>
+                    <div class="stat-box">
+                        <div class="stat-value">{{ styles.length }}</div>
+                        <div class="stat-label">可用风格</div>
+                    </div>
+                </div>
+            </section>
+
+            <!-- ========== 数据采集 ========== -->
+            <section v-if="currentPage === 'scraper'" class="page active">
+                <header class="page-header">
+                    <h1>数据采集</h1>
+                    <p>获取广告素材情报：LLM 联网搜索（推荐，规避反爬）或 Playwright 直采</p>
+                </header>
+                <div class="domain-tabs">
+                    <button class="tab-btn" :class="{ active: scrapeMode === 'web' }" @click="scrapeMode = 'web'">
+                        🛰 联网搜索 (LLM)
+                    </button>
+                    <button class="tab-btn" :class="{ active: scrapeMode === 'playwright' }" @click="scrapeMode = 'playwright'">
+                        🕷 Playwright 直采
+                    </button>
+                </div>
+
+                <!-- 联网搜索模式 -->
+                <div v-if="scrapeMode === 'web'" class="toolbar">
+                    <input v-model="scrapeForm.keyword" class="field input" placeholder="搜索关键词（如：美妆广告案例 / 2026 电商素材）">
+                    <select v-model="scrapeForm.days" class="field select">
+                        <option :value="7">近 7 天</option>
+                        <option :value="30">近 30 天</option>
+                        <option :value="90">近 90 天</option>
+                        <option :value="365">近 1 年</option>
+                    </select>
+                    <input v-model="scrapeForm.domains" class="field input" placeholder="限定域名（逗号分隔，可选）">
+                    <button class="btn primary" :disabled="!scrapeForm.keyword || searching" @click="scrapeWebSearch">
+                        {{ searching ? '搜索中…' : '联网搜索' }}
+                    </button>
+                </div>
+                <p v-if="scrapeMode === 'web'" class="field-hint">🛰 通过 LLM Web Search 获取公开索引的素材情报，规避目标站点登录墙与反爬；需在「API 配置」配置 OpenAI 或 Anthropic 密钥</p>
+
+                <!-- Playwright 模式 -->
+                <template v-if="scrapeMode === 'playwright'">
+                    <div class="toolbar">
+                        <select v-model="scrapeForm.source" class="field select">
+                            <option v-for="(s, id) in sources" :key="id" :value="id">{{ s.name }}</option>
+                        </select>
+                        <input v-model="scrapeForm.industry" class="field input" placeholder="行业（如：美妆/电商/游戏）">
+                        <input v-model="scrapeForm.keyword" class="field input" placeholder="搜索关键词（可选）">
+                        <button class="btn primary" :disabled="scraping" @click="scrapeTrending">
+                            {{ scraping ? '采集中…' : '采集热门关键词' }}
+                        </button>
+                        <button class="btn" :disabled="searching" @click="scrapeSearch">搜索素材</button>
+                    </div>
+                    <p class="field-hint">⚠ 外部平台通常需要登录与授权，存在反爬限制，直采可能失败；失败时返回诊断信息供排查</p>
+                </template>
+
+                <div v-if="scrapeLoading" class="loading-state"><div class="spinner"></div><p>正在采集数据…</p></div>
+                <div v-if="scrapeResult" class="result-card">
+                    <div class="result-head">
+                        <h3>采集结果</h3>
+                        <span class="badge" :class="scrapeResult.status">{{ statusText(scrapeResult.status) }}</span>
+                    </div>
+                    <p class="result-meta">{{ scrapeResultMeta }}</p>
+                    <!-- 联网搜索来源卡片 -->
+                    <div v-if="scrapeResult.sources" class="search-sources">
+                        <div v-for="(s, i) in scrapeResult.sources" :key="i" class="search-source-item">
+                            <a :href="s.url" target="_blank" class="search-source-title">{{ s.title || s.url }}</a>
+                            <div v-if="s.snippet" class="search-source-snippet">{{ s.snippet }}</div>
+                            <div class="search-source-meta">
+                                <span v-if="s.platform" class="tag-chip">{{ s.platform }}</span>
+                                <span v-if="s.date" class="tag-chip">{{ s.date }}</span>
+                                <span class="source-url">{{ (s.url || '').slice(0, 50) }}</span>
+                            </div>
+                        </div>
+                        <div v-if="scrapeResult.sources && !scrapeResult.sources.length" class="search-source-empty">{{ scrapeResult.error || '未找到结果' }}</div>
+                    </div>
+                    <!-- 关键词云（Playwright 模式） -->
+                    <div v-else-if="scrapeResult.keywords" class="keyword-cloud">
+                        <span v-for="(k, i) in scrapeResult.keywords" :key="i" class="keyword-tag"
+                              @click="useKeyword(k.keyword)">
+                            {{ k.keyword }}
+                            <span class="freq">{{ k.frequency }}</span>
+                            <span class="trend" :class="k.trend">{{ trendIcon(k.trend) }}</span>
+                        </span>
+                    </div>
+                    <div v-if="scrapeResult.diagnostics" class="diagnostics">
+                        <details>
+                            <summary>诊断信息（排查失败原因）</summary>
+                            <pre class="kv-block">{{ JSON.stringify(scrapeResult.diagnostics, null, 2) }}</pre>
+                        </details>
+                    </div>
+                </div>
+            </section>
+
+            <!-- ========== 素材解析 ========== -->
+            <section v-if="currentPage === 'parser'" class="page active">
+                <header class="page-header">
+                    <h1>素材反向解析</h1>
+                    <p>上传图片或视频，AI 自动分析视觉元素并提取关键词与生成 Prompt</p>
+                </header>
+                <!-- 配置状态引导 (A2) -->
+                <div v-if="!configuredLlmCount" class="config-banner warn">
+                    <span>⚠ 尚未配置大模型 API，素材解析将不可用。</span>
+                    <button class="btn small" @click="switchPage('apiconfig')">前往配置 LLM →</button>
+                </div>
+                <div v-else-if="!healthLLMVision" class="config-banner warn">
+                    <span>⚠ 当前 LLM 模型不支持视觉分析，上传图片/视频将无法反推。</span>
+                    <button class="btn small" @click="switchPage('apiconfig')">前往配置视觉模型 →</button>
+                </div>
+                <div class="upload-zone" :class="{ dragover: dragOver }" @click="fileInput.click()"
+                     @dragover.prevent="dragOver = true" @dragleave="dragOver = false"
+                     @drop.prevent="handleDrop">
+                    <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M12 16V4m0 0L8 8m4-4l4 4M4 16v3a1 1 0 001 1h14a1 1 0 001-1v-3"/></svg>
+                    <p><strong>拖拽文件到此处</strong> 或点击选择</p>
+                    <p class="hint">支持 JPG/PNG/MP4/MOV 等，最大 100MB</p>
+                    <input ref="fileInput" type="file" class="hidden-input" accept="image/*,video/*" @change="handleFileSelect">
+                </div>
+                <div v-if="analyzing" class="loading-state"><div class="spinner"></div><p>AI 正在分析素材…</p></div>
+                <div v-if="analysis && analysis.status === 'not_configured'" class="result-card">
+                    <div class="result-head"><h3>解析不可用</h3><span class="badge failed">未配置</span></div>
+                    <p class="result-meta">{{ analysis.error }}</p>
+                    <button class="btn primary mt" @click="switchPage('apiconfig')">前往「API 配置」→</button>
+                </div>
+                <div v-if="analysis && analysis.status !== 'not_configured'" class="analysis-result">
+                    <div class="result-card">
+                        <div class="result-head">
+                            <h3>解析结果</h3>
+                            <span class="badge" :class="analysis.status">{{ analysis.status === 'mock' ? '模拟数据' : 'AI 分析' }}</span>
+                        </div>
+                        <p class="result-meta">{{ analysis.original_filename }} · {{ analysis.file_type }}</p>
+                        <div v-if="analysis.analysis['关键词']?.length" class="section">
+                            <h4>提取关键词</h4>
+                            <div class="keyword-cloud">
+                                <span v-for="(k, i) in analysis.analysis['关键词']" :key="i" class="keyword-tag">{{ k }}</span>
+                            </div>
+                        </div>
+                        <div v-if="analysis.analysis['视觉元素分析']" class="section">
+                            <h4>视觉元素分析</h4>
+                            <pre class="kv-block">{{ kvText(analysis.analysis['视觉元素分析']) }}</pre>
+                        </div>
+                        <div v-if="analysis.analysis['AI生成Prompt']?.english" class="section">
+                            <h4>AI 生成 Prompt (EN)</h4>
+                            <div class="prompt-block">{{ analysis.analysis['AI生成Prompt'].english }}</div>
+                        </div>
+                        <div v-if="analysis.analysis['AI生成Prompt']?.chinese" class="section">
+                            <h4>AI 生成 Prompt (中文)</h4>
+                            <div class="prompt-block">{{ analysis.analysis['AI生成Prompt'].chinese }}</div>
+                        </div>
+                        <div v-if="analysis.analysis['风格标签']?.length" class="section">
+                            <h4>推荐风格</h4>
+                            <div class="keyword-cloud">
+                                <span v-for="(s, i) in analysis.analysis['风格标签']" :key="i" class="keyword-tag style-tag" @click="selectStyleByName(s)">{{ s }}</span>
+                            </div>
+                        </div>
+                        <button class="btn primary mt" @click="goGenerate">前往素材生成 →</button>
+                    </div>
+                </div>
+            </section>
+
+            <!-- ========== 素材生成（创意方案 + 视频统一） ========== -->
+            <section v-if="currentPage === 'generator'" class="page active">
+                <header class="page-header">
+                    <h1>素材生成</h1>
+                    <p>基于解析结果统一产出：图文创意方案（LLM 生成文案与 Prompt）或视频素材（Video API 直接生成）</p>
+                </header>
+                <div class="output-tabs">
+                    <button class="tab-btn" :class="{ active: outputType === 'creative' }" @click="outputType = 'creative'">图文创意方案</button>
+                    <button class="tab-btn" :class="{ active: outputType === 'video' }" @click="outputType = 'video'">视频素材</button>
+                </div>
+
+                <!-- 创意方案产出（文案 + Prompt，非成品图片） -->
+                <div v-if="outputType === 'creative'" class="gen-layout">
+                    <div class="gen-left">
+                        <div class="notice slim">图文创意方案产出 <b>标题/描述/行动号召 + AI Prompt</b>，供投放文案或转视频生成使用，不直接生成图片文件。</div>
+                        <h3>选择目标风格</h3>
+                        <div class="style-grid">
+                            <div v-for="s in styles" :key="s.id" class="style-card"
+                                 :class="{ selected: selectedStyle === s.id }" @click="selectedStyle = s.id">
+                                <h4>{{ s.name }}</h4>
+                                <p>{{ s.description }}</p>
+                                <div class="swatches"><span v-for="(c, i) in s.color_palette" :key="i" class="swatch" :style="{ background: c }"></span></div>
+                            </div>
+                        </div>
+                        <h3>生成参数</h3>
+                        <label class="field-label">产品信息（可选）</label>
+                        <input v-model="genForm.product_info" class="field input full" placeholder="如：护肤套装">
+                        <label class="field-label">投放平台（可选）</label>
+                        <select v-model="genForm.platform" class="field select full">
+                            <option value="">不限</option>
+                            <option v-for="p in platforms" :key="p" :value="p">{{ p }}</option>
+                        </select>
+                        <label class="field-label">生成数量</label>
+                        <select v-model="genForm.count" class="field select full">
+                            <option :value="3">3 套</option><option :value="5">5 套</option><option :value="10">10 套</option>
+                        </select>
+                        <button class="btn primary full" :disabled="!analysis || !configuredLlmCount || generating" @click="generateCreatives">
+                            {{ generating ? '生成中…' : '生成创意方案' }}
+                        </button>
+                        <p v-if="!analysis" class="field-hint">请先在「素材解析」页面上传素材</p>
+                        <p v-else-if="!configuredLlmCount" class="field-hint warn">未配置 LLM API，无法生成创意方案，请前往「API 配置」</p>
+                    </div>
+                    <div class="gen-right">
+                        <div v-if="generating" class="loading-state"><div class="spinner"></div><p>AI 正在生成创意…</p></div>
+                        <div v-if="generation" class="gen-result">
+                            <div v-if="generation.status === 'mock'" class="notice">当前为模拟生成，请到「API 配置」页配置 LLM 获得真实生成</div>
+                            <div class="result-card">
+                                <div class="result-head"><h3>风格迁移：{{ generation.source_style }} → {{ generation.target_style }}</h3></div>
+                                <div v-if="generation.style_migration" class="migration">
+                                    <div class="mig-col">
+                                        <h4>保留</h4>
+                                        <span v-for="(e, i) in generation.style_migration.preserved" :key="i" class="mig-tag keep">{{ e }}</span>
+                                    </div>
+                                    <div class="mig-col">
+                                        <h4>转换</h4>
+                                        <span v-for="(e, i) in generation.style_migration.transformed" :key="i" class="mig-tag transform">{{ e }}</span>
+                                    </div>
+                                    <div class="mig-col">
+                                        <h4>新增</h4>
+                                        <span v-for="(e, i) in generation.style_migration.added" :key="i" class="mig-tag add">{{ e }}</span>
+                                    </div>
+                                </div>
+                            </div>
+                            <div v-for="(c, i) in generation.creatives" :key="i" class="creative-card">
+                                <div class="creative-head">
+                                    <h3>{{ c.creative_name }}</h3>
+                                    <span class="badge">{{ generation.target_style }}</span>
+                                </div>
+                                <div v-if="c.headline" class="kv"><span class="k">标题</span><span class="v">{{ c.headline }}</span></div>
+                                <div v-if="c.description" class="kv"><span class="k">描述</span><span class="v">{{ c.description }}</span></div>
+                                <div v-if="c.call_to_action" class="kv"><span class="k">行动号召</span><span class="v">{{ c.call_to_action }}</span></div>
+                                <div v-if="c.ai_prompt_en" class="kv col">
+                                    <span class="k">AI Prompt (EN)</span>
+                                    <div class="prompt-block">{{ c.ai_prompt_en }}</div>
+                                </div>
+                                <div v-if="c.ai_prompt_zh" class="kv col">
+                                    <span class="k">AI Prompt (中文)</span>
+                                    <div class="prompt-block">{{ c.ai_prompt_zh }}</div>
+                                </div>
+                                <div v-if="c.color_scheme" class="kv"><span class="k">配色</span><span class="v">
+                                    <span v-for="(col, j) in c.color_scheme" :key="j" class="swatch" :style="{ background: col }" :title="col"></span>
+                                </span></div>
+                                <div v-if="c.layout" class="kv"><span class="k">布局</span><span class="v">{{ c.layout }}</span></div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- 视频素材产出 -->
+                <div v-if="outputType === 'video'" class="video-layout">
+                    <div class="video-left">
+                        <h3>素材描述</h3>
+                        <textarea v-model="videoForm.prompt" class="field textarea" rows="5"
+                                  placeholder="输入视频画面描述，或引用解析结果的 Prompt"></textarea>
+                        <button v-if="analysis?.analysis?.['AI生成Prompt']?.english" class="btn small mt4"
+                                @click="videoForm.prompt = analysis.analysis['AI生成Prompt'].english || videoForm.prompt">
+                            ↪ 引用解析结果的英文 Prompt
+                        </button>
+                        <h3>视频 API</h3>
+                        <select v-model="videoForm.provider" class="field select full" @change="onVideoProviderSelect">
+                            <option v-for="p in videoProviders" :key="p.id" :value="p.id">{{ p.name }}</option>
+                        </select>
+                        <div v-if="videoProviderMeta" class="provider-meta">
+                            <div class="kv"><span class="k">端点</span><span class="v mono">{{ videoProviderMeta.default_endpoint || '自定义' }}</span></div>
+                            <div class="kv"><span class="k">模型</span><span class="v">{{ videoProviderMeta.default_model || '自定义' }}</span></div>
+                        </div>
+                        <div v-if="!configuredVideoCount" class="notice">尚未配置视频 API，无法生成真实视频。请到「API 配置」页 → 视频 API 填写密钥与端点。</div>
+                        <h3>生成参数</h3>
+                        <label class="field-label">时长（秒）</label>
+                        <select v-model="videoForm.duration" class="field select full">
+                            <option v-for="d in (videoProviderMeta?.supported_durations || [5,10])" :key="d" :value="d">{{ d }} 秒</option>
+                        </select>
+                        <label v-if="videoProviderMeta?.supported_resolutions?.length" class="field-label">分辨率</label>
+                        <select v-if="videoProviderMeta?.supported_resolutions?.length" v-model="videoForm.resolution" class="field select full">
+                            <option v-for="r in videoProviderMeta.supported_resolutions" :key="r" :value="r">{{ r }}</option>
+                        </select>
+                        <label v-if="videoProviderMeta?.supported_aspect_ratios?.length" class="field-label">宽高比</label>
+                        <select v-if="videoProviderMeta?.supported_aspect_ratios?.length" v-model="videoForm.aspect_ratio" class="field select full">
+                            <option v-for="a in videoProviderMeta.supported_aspect_ratios" :key="a" :value="a">{{ a }}</option>
+                        </select>
+                        <button class="btn primary full" :disabled="!videoForm.prompt.trim() || videoGenerating" @click="generateVideo">
+                            {{ videoGenerating ? '生成中…' : '生成视频' }}
+                        </button>
+                    </div>
+                    <div class="video-right">
+                        <div v-if="videoGenerating" class="video-progress-panel">
+                            <div class="loading-state"><div class="spinner"></div><p>视频生成中，请稍候…</p></div>
+                            <div class="progress-bar"><div class="progress-fill" :style="{ width: videoTask?.progress + '%' }"></div></div>
+                            <p class="progress-text">{{ videoTask?.progress || 0 }}%</p>
+                            <p v-if="videoTask?.mode === 'mock'" class="field-hint">模拟模式：未配置真实视频 API，任务将自动完成</p>
+                        </div>
+                        <div v-if="videoTask?.status === 'succeeded' && videoTask?.video_url" class="video-player-wrap">
+                            <video :src="videoTask.video_url" controls autoplay muted class="video-player"></video>
+                            <p class="field-hint">任务: {{ videoTask.task_id }} · {{ videoTask.provider }} · 生成完成</p>
+                        </div>
+                        <div v-if="videoTask?.status === 'failed'" class="notice error">{{ videoTask.error }}</div>
+                        <div v-if="recentVideoTasks.length && !videoTask" class="recent-tasks">
+                            <h3>最近生成</h3>
+                            <div v-for="t in recentVideoTasks" :key="t.task_id" class="recent-task" @click="viewTask(t.task_id)">
+                                <span class="status-dot" :class="t.status"></span>
+                                <span class="recent-prompt">{{ t.prompt.slice(0, 30) }}{{ t.prompt.length > 30 ? '…' : '' }}</span>
+                                <span class="badge" :class="t.status">{{ t.status }}</span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </section>
+
+            <!-- ========== 一键工作流 ========== -->
+            <section v-if="currentPage === 'workflow'" class="page active">
+                <header class="page-header">
+                    <h1>一键工作流</h1>
+                    <p>上传素材 → 自动解析 → 选择风格 → 一键生成，全流程自动化</p>
+                </header>
+                <div class="upload-zone" :class="{ dragover: wfDragOver }" @click="wfInput.click()"
+                     @dragover.prevent="wfDragOver = true" @dragleave="wfDragOver = false"
+                     @drop.prevent="handleWfDrop">
+                    <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M12 16V4m0 0L8 8m4-4l4 4M4 16v3a1 1 0 001 1h14a1 1 0 001-1v-3"/></svg>
+                    <p><strong>{{ wfFile ? '已选择: ' + wfFile.name : '上传素材文件开始工作流' }}</strong></p>
+                    <p class="hint">支持图片和视频文件</p>
+                    <input ref="wfInput" type="file" class="hidden-input" accept="image/*,video/*" @change="e => wfFile = e.target.files[0]">
+                </div>
+                <div v-if="wfFile" class="wf-config">
+                    <h3>选择目标风格</h3>
+                    <div class="style-grid">
+                        <div v-for="s in styles" :key="s.id" class="style-card small"
+                             :class="{ selected: selectedStyle === s.id }" @click="selectedStyle = s.id">
+                            <h4>{{ s.name }}</h4>
+                        </div>
+                    </div>
+                    <label class="field-label">产品信息（可选）</label>
+                    <input v-model="genForm.product_info" class="field input full" placeholder="如：护肤套装">
+                    <button class="btn primary full" :disabled="!selectedStyle || wfRunning" @click="runWorkflow">
+                        {{ wfRunning ? '执行中…' : '执行完整工作流' }}
+                    </button>
+                </div>
+                <div v-if="wfRunning" class="wf-progress">
+                    <div v-for="(s, i) in wfSteps" :key="i" class="wf-step" :class="wfStepState(i)">
+                        <span class="wf-icon">{{ s.icon }}</span>{{ s.label }}
+                    </div>
+                </div>
+                <div v-if="wfResult" class="wf-result">
+                    <div class="result-card">
+                        <div class="result-head"><h3>工作流完成 ✓</h3></div>
+                        <p class="result-meta">解析 {{ wfResult.steps.analysis.status }}（{{ wfResult.steps.analysis.keywords?.length || 0 }} 关键词）→ 生成 {{ wfResult.steps.generation.count }} 套「{{ wfResult.steps.generation.target_style }}」方案</p>
+                    </div>
+                    <div v-if="wfResult.steps.analysis.keywords?.length" class="result-card">
+                        <h3>解析关键词</h3>
+                        <div class="keyword-cloud"><span v-for="(k, i) in wfResult.steps.analysis.keywords" :key="i" class="keyword-tag">{{ k }}</span></div>
+                    </div>
+                    <div v-for="(c, i) in wfResult.generation_result.creatives" :key="i" class="creative-card">
+                        <div class="creative-head"><h3>{{ c.creative_name }}</h3><span class="badge">{{ wfResult.steps.generation.target_style }}</span></div>
+                        <div v-if="c.headline" class="kv"><span class="k">标题</span><span class="v">{{ c.headline }}</span></div>
+                        <div v-if="c.ai_prompt_en" class="kv col"><span class="k">AI Prompt (EN)</span><div class="prompt-block">{{ c.ai_prompt_en }}</div></div>
+                        <div v-if="c.ai_prompt_zh" class="kv col"><span class="k">AI Prompt (中文)</span><div class="prompt-block">{{ c.ai_prompt_zh }}</div></div>
+                    </div>
+                </div>
+            </section>
+
+            <!-- ========== API 配置（LLM + 视频双域，支持自定义） ========== -->
+            <section v-if="currentPage === 'apiconfig'" class="page active">
+                <header class="page-header">
+                    <h1>API 配置</h1>
+                    <p>可视化配置大模型（LLM）与视频生成 API：选择提供商（含自定义）、填写密钥与端点、测试连接、保存部署，无需修改任何配置文件</p>
+                </header>
+                <div class="domain-tabs">
+                    <button class="tab-btn" :class="{ active: configDomain === 'llm' }" @click="switchConfigDomain('llm')">
+                        大模型 LLM <span class="tab-count" :class="{ on: configuredLlmCount > 0 }">{{ configuredLlmCount }}</span>
+                    </button>
+                    <button class="tab-btn" :class="{ active: configDomain === 'video' }" @click="switchConfigDomain('video')">
+                        视频 API <span class="tab-count" :class="{ on: configuredVideoCount > 0 }">{{ configuredVideoCount }}</span>
+                    </button>
+                </div>
+                <div class="apiconfig-grid">
+                    <div class="apiconfig-form">
+                        <h3>{{ editingProvider ? '编辑: ' + editingProviderName : '新增 ' + (configDomain === 'llm' ? '大模型' : '视频') + ' API 配置' }}</h3>
+                        <label class="field-label">API 提供商</label>
+                        <select v-model="configForm.provider" class="field select full" :disabled="!!editingProvider" @change="onProviderSelect">
+                            <option value="">选择提供商…</option>
+                            <option v-for="p in activeProviders" :key="p.id" :value="p.id">{{ p.name }}{{ p.is_custom ? ' (自定义)' : '' }}</option>
+                        </select>
+                        <div v-if="configForm.provider">
+                            <label class="field-label">API Key</label>
+                            <input v-model="configForm.api_key" type="password" class="field input full" :placeholder="savedKeyHint || '输入 API Key'">
+                            <!-- LLM 域字段 -->
+                            <template v-if="configDomain === 'llm'">
+                                <label class="field-label">接口地址（Base URL）</label>
+                                <input v-model="configForm.base_url" class="field input full" :placeholder="activeProviderMeta?.default_base_url || 'https://…'">
+                                <p class="field-hint" v-if="activeProviderMeta?.default_base_url">官方地址：<span class="mono">{{ activeProviderMeta.default_base_url }}</span></p>
+                                <label class="field-label">对话模型</label>
+                                <input v-model="configForm.model" class="field input full" :placeholder="activeProviderMeta?.default_model || '模型 ID，如 gpt-4o'">
+                                <!-- 多模态提示：对话模型本身支持视觉时 -->
+                                <p v-if="activeProviderMeta?.multimodal_models?.length" class="field-hint">
+                                    该提供商多模态模型可直接分析图片：{{ activeProviderMeta.multimodal_models.join('、') }}
+                                </p>
+                                <!-- 视觉模型字段：无视觉能力时隐藏 -->
+                                <template v-if="configForm.supports_vision">
+                                    <label class="field-label">视觉模型（用于素材抽帧反推，可留空）</label>
+                                    <input v-model="configForm.vision_model" class="field input full"
+                                           :placeholder="activeProviderMeta?.vision_default_model || '留空则使用对话模型（多模态模型可如此）'">
+                                    <p class="field-hint">留空时使用对话模型分析图片（适用于 qwen-VL / GLM-4V 等多模态模型）</p>
+                                </template>
+                                <template v-else>
+                                    <p class="field-hint warn">该模型不支持图片/视频分析，素材反向解析将无法使用，请选择支持视觉的模型</p>
+                                </template>
+                                <label class="field-label">LiteLLM 前缀</label>
+                                <input v-model="configForm.litellm_prefix" class="field input full" :placeholder="activeProviderMeta?.litellm_prefix || 'openai'">
+                            </template>
+                            <!-- 视频域字段 -->
+                            <template v-else>
+                                <label class="field-label">接口地址（Endpoint）</label>
+                                <input v-model="configForm.endpoint" class="field input full" :placeholder="activeProviderMeta?.default_endpoint || 'https://…'">
+                                <label class="field-label">模型名称</label>
+                                <input v-model="configForm.model" class="field input full" :placeholder="activeProviderMeta?.default_model || '模型 ID'">
+                            </template>
+                            <div class="form-actions">
+                                <button class="btn" :disabled="testing" @click="testConnection">{{ testing ? '测试中…' : '测试连接' }}</button>
+                                <button class="btn primary" :disabled="saving" @click="saveConfig">{{ saving ? '保存中…' : '保存配置' }}</button>
+                            </div>
+                            <div v-if="testResult" class="test-result" :class="testResult.ok ? 'ok' : 'fail'">
+                                <span v-if="testResult.ok">✓ 连接成功（{{ testResult.latency_ms || '-' }}ms）{{ testResult.message ? '· ' + testResult.message : '' }}</span>
+                                <span v-else>✗ {{ testResult.error }}</span>
+                            </div>
+                        </div>
+                        <div v-else class="field-hint">请先选择 API 提供商</div>
+                    </div>
+                    <div class="apiconfig-list">
+                        <h3>已配置（{{ Object.keys(activeConfigs).length }}）</h3>
+                        <div v-if="!Object.keys(activeConfigs).length" class="empty-state"><p>暂无已配置的 {{ configDomain === 'llm' ? '大模型' : '视频' }} API，在左侧完成配置</p></div>
+                        <div v-for="(cfg, pid) in activeConfigs" :key="pid" class="saved-card">
+                            <div class="saved-head">
+                                <strong>{{ cfg.name }}</strong>
+                                <span class="badge" :class="cfg.enabled ? 'success' : ''">{{ cfg.enabled ? '已启用' : '已停用' }}</span>
+                            </div>
+                            <div v-if="cfg.base_url" class="kv"><span class="k">Base URL</span><span class="v mono">{{ cfg.base_url }}</span></div>
+                            <div v-if="cfg.endpoint" class="kv"><span class="k">端点</span><span class="v mono">{{ cfg.endpoint }}</span></div>
+                            <div v-if="cfg.model" class="kv"><span class="k">模型</span><span class="v">{{ cfg.model }}</span></div>
+                            <div v-if="cfg.vision_model" class="kv"><span class="k">视觉模型</span><span class="v">{{ cfg.vision_model }}</span></div>
+                            <div v-if="cfg.api_key_masked" class="kv"><span class="k">密钥</span><span class="v mono">{{ cfg.api_key_masked }}</span></div>
+                            <div class="saved-actions">
+                                <button class="btn small" @click="editConfig(pid)">编辑</button>
+                                <button class="btn small danger" @click="deleteConfig(pid)">删除</button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </section>
+
+            <!-- ========== 悬浮运行日志窗 (B2) ========== -->
+            <div class="log-fab" :class="{ expanded: logPanel.expanded }" ref="logFabRef">
+                <!-- 收起态：悬浮圆点 -->
+                <div v-if="!logPanel.expanded" class="log-fab-dot" @click.stop="toggleLogPanel" title="查看运行日志">
+                    <span class="log-fab-icon">📋</span>
+                    <span v-if="logPanel.errorCount > 0" class="log-fab-badge">{{ logPanel.errorCount }}</span>
+                </div>
+                <!-- 展开态：日志面板 -->
+                <div v-else class="log-panel" @mousedown.stop>
+                    <div class="log-panel-head" @mousedown="startLogDrag">
+                        <span class="log-title">运行日志</span>
+                        <div class="log-head-actions">
+                            <button class="log-btn" @click.stop="toggleLogFilter('info')" :class="{ on: logPanel.minLevel === 'info' }">Info</button>
+                            <button class="log-btn warn" @click.stop="toggleLogFilter('warn')" :class="{ on: logPanel.minLevel === 'warn' }">Warn</button>
+                            <button class="log-btn error" @click.stop="toggleLogFilter('error')" :class="{ on: logPanel.minLevel === 'error' }">Error</button>
+                            <button class="log-btn" title="清空" @click.stop="clearLogs">清空</button>
+                            <button class="log-btn close" title="最小化" @click.stop="toggleLogPanel">—</button>
+                        </div>
+                    </div>
+                    <div class="log-body">
+                        <div v-for="entry in filteredLogs" :key="entry.id" class="log-entry" :class="entry.level">
+                            <span class="log-time">{{ logTime(entry.ts) }}</span>
+                            <span class="log-event">{{ logEventLabel(entry.event) }}</span>
+                            <span class="log-msg">{{ entry.message }}</span>
+                            <span v-if="entry.detail && (logPanel.minLevel === 'warn' || logPanel.minLevel === 'error')"
+                                  class="log-detail">{{ logDetail(entry.detail) }}</span>
+                        </div>
+                        <div v-if="!filteredLogs.length" class="log-empty">暂无日志</div>
+                    </div>
+                </div>
+            </div>
+        </main>
+    </div>
+
+    <script src="https://cdn.jsdelivr.net/npm/vue@3.4.21/dist/vue.global.prod.js"></script>
+    <script src="/static/app.js"></script>
+</body>
+</html>
