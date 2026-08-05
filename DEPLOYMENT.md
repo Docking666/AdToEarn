@@ -170,3 +170,84 @@ server {
 | `/health` 正常但页面 404 | 静态文件未复制 | 确认 `web/` 目录已 COPY |
 | 联网搜索报 not_configured | 未设模型密钥 | 环境变量 `OPENAI_API_KEY` 或 WebUI 配置 |
 | SSE 日志窗不更新 | 反向代理缓冲 | Nginx 加 `proxy_buffering off` |
+
+---
+
+## 8. 免费云平台部署（零成本 · 即开即用）
+
+> 面向「想白嫖一台能跑 FastAPI 的服务器」的场景，对标 AiToEarn 官网的即开即用体验。
+> 方案：**Render 免费版为主**（国内基本可访问、GitHub 自动部署、免信用卡），**Hugging Face Spaces 为备选**。
+
+### 8.1 平台对比
+
+| 平台 | 免费规格 | 休眠策略 | 端口 | 国内访问 |
+|------|---------|---------|------|---------|
+| **Render**（主选）| 512MB RAM / 750h每月 / 500构建分钟 | 闲置 15min 休眠，冷启动 30-60s | `$PORT` 注入 | onrender.com 基本可达（速度有波动）|
+| **Hugging Face Spaces**（备选）| 2 vCPU / 16GB / 50GB | 闲置 48h 休眠，冷启动 30-90s | 必须 7860（`$PORT`）| hf.space 国内不稳定 |
+| Oracle Cloud 永久免费 | 真服务器 4核/24GB，永不停机 | 无 | 任意 | 好（需海外账号+信用卡验证）|
+
+> 免费版共同限制：**磁盘易失**（重启/重建后上传文件丢失）、无 SLA。密钥不受影响——由 `entrypoint.sh` 每次启动从环境变量重写进 `config/api_config.json`。
+
+### 8.2 轻量镜像与密钥注入原理
+
+- **`Dockerfile.slim`**：去掉了 Chromium 系统依赖与 `playwright install`，镜像约 500MB（原版 1.5GB+），适配 512MB 免费实例；Playwright 仅保留 pip 包（懒加载 import，不影响启动）。
+- **`entrypoint.sh`**：容器启动时把 `OPENAI_API_KEY` / `ANTHROPIC_API_KEY` 等环境变量写入 `config/api_config.json`（业务代码经 `api_config_manager` 只读该文件），再启动 uvicorn。端口取 `$PORT`（Render=10000 / HF=7860），本地默认 8765。
+- 环境变量清单：
+
+| 变量 | 必填 | 默认值 |
+|------|:---:|--------|
+| `OPENAI_API_KEY` | 二选一 | - |
+| `ANTHROPIC_API_KEY` | 二选一 | - |
+| `OPENAI_BASE_URL` | 否 | https://api.openai.com/v1 |
+| `OPENAI_MODEL` | 否 | gpt-4o |
+| `OPENAI_VISION_MODEL` | 否 | gpt-4o |
+| `ANTHROPIC_MODEL` / `ANTHROPIC_VISION_MODEL` | 否 | claude-sonnet-4-20250514 |
+
+> 至少配置一家（OpenAI 或 Anthropic）联网搜索才能工作；都不配时接口返回 `not_configured` 引导（预期行为）。
+
+### 8.3 部署到 Render（主选，免信用卡）
+
+1. 提交部署文件并推送：`Dockerfile.slim`、`entrypoint.sh`、`render.yaml`（已在仓库中）。
+2. 浏览器打开 [render.com](https://render.com) → GitHub 登录（免信用卡）→ **New + → Blueprint** → 选择 `Docking666/AdToEarn` 仓库。
+3. 按提示填写 `OPENAI_API_KEY`、`ANTHROPIC_API_KEY`（render.yaml 中标记 `sync: false`，不会入库），其余用默认值。
+4. 首次构建约 5-8 分钟 → 自动启动，获得 `https://adtoearn.onrender.com` 类 URL。
+
+> render.yaml 已配置：docker runtime + `Dockerfile.slim` + region=singapore + `/health` 探活 + 5 个环境变量。
+
+### 8.4 部署到 Hugging Face Spaces（备选）
+
+1. [huggingface.co](https://huggingface.co) → **New Space** → SDK 选 **Docker** → 记下 `USER/NAME`。
+2. 本地克隆空间仓库，将轻量镜像设为构建入口（HF 只认根目录 `Dockerfile`）：
+   ```bash
+   git clone https://huggingface.co/spaces/USER/NAME hf-space
+   cd hf-space
+   git remote add origin2 https://github.com/Docking666/AdToEarn.git
+   git fetch origin2
+   git checkout origin2/main -- .      # 拉取整个项目
+   cp Dockerfile.slim Dockerfile       # 关键：HF 用根 Dockerfile 构建
+   git add -A && git commit -m "init"
+   git push origin main                # 需要 write token（Settings → Tokens）
+   ```
+3. Space → **Settings → Variables and secrets** 填入 8.2 的环境变量。
+4. 构建完成后访问 `https://USER-NAME.hf.space`。
+
+> README.md 顶部已含 HF 元数据块（`sdk: docker` / `app_port: 7860`），无需再改。
+
+### 8.5 验证清单
+
+| # | 验证项 | 方法 | 预期 |
+|---|--------|------|------|
+| 1 | 密钥注入 | `GET /health` | `config_status.llm = configured` |
+| 2 | WebUI 加载 | 访问 `/` | 深色主题界面正常渲染 |
+| 3 | 联网搜索 | 数据采集 → 联网搜索 → 输入关键词 | 返回带 URL 的 sources |
+| 4 | 未配置引导 | 清空 env 重新部署 | 返回 `not_configured` + 配置引导（预期）|
+| 5 | SSE 日志窗 | 页面右下角日志窗展开 | `/api/logs/stream` 实时滚动 |
+| 6 | 探活 | Render Dashboard | 健康检查通过 |
+
+### 8.6 注意事项
+
+- 免费版**冷启动 30-90s**（闲置休眠后首次访问），属预期体验。
+- **上传文件随重启丢失**（磁盘易失）；密钥因 entrypoint 每次注入不受影响。
+- 公开 URL **任何人可用**，会消耗你的 API 额度。可选加固（未内置）：设置 `ACCESS_TOKEN` 环境变量并在 `server/main.py` 加约 12 行中间件校验访问口令。
+- LLM 请求从新加坡/美国机房出网，调用 OpenAI/Anthropic 正常；若需国内中转端点（qwen/zhipu 等）可通过 `OPENAI_BASE_URL` 配置，但 **Web Search 工具仅 OpenAI/Anthropic 原生支持**。
+- 长期稳定方案（付费）：腾讯云/阿里云轻量服务器（国内快、需实名）或 Oracle 东京免费 VPS（24/7 永续在线）。

@@ -1,0 +1,38 @@
+# AdToEarn 轻量部署镜像（无 Playwright Chromium）
+# 适用：Render / Hugging Face Spaces 等免费云平台（LLM 联网搜索 + 素材解析 + 生成）
+# 说明：若需要 Playwright 爬虫完整功能，请使用原 Dockerfile（含 Chromium，约 1.5GB+）
+#       本镜像去掉浏览器依赖，约 500MB，适配 512MB 免费档实例
+# 端口：由平台环境变量注入（Render=$PORT，HF=7860），本地无则默认 8765，无需改代码
+
+FROM python:3.13-slim
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PIP_NO_CACHE_DIR=1 \
+    LANG=C.UTF-8 \
+    LC_ALL=C.UTF-8
+
+WORKDIR /app
+
+# Python 依赖（playwright 仅安装 pip 包，不下载浏览器二进制，兼容 scraper 懒加载 import）
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+# 应用代码（.dockerignore 已排除 .venv/uploads/cache/api_config.json）
+COPY server/ ./server/
+COPY web/ ./web/
+COPY config/ ./config/
+COPY entrypoint.sh /app/entrypoint.sh
+
+# 运行时目录 + 默认空配置（每次启动由 entrypoint.sh 依据环境变量重写密钥）
+RUN mkdir -p uploads cache && \
+    echo '{"llm": {}, "video": {}}' > config/api_config.json
+
+# Hugging Face Spaces 要求以 UID 1000 运行（Render 同样兼容）
+RUN useradd -m -u 1000 user && \
+    chown -R user:user /app
+USER user
+
+EXPOSE 8765
+
+CMD ["sh", "-c", "/app/entrypoint.sh"]

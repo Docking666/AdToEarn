@@ -1,0 +1,30 @@
+# AdToEarn — Render Blueprint（免费云部署）
+# 用法：render.com → New + → Blueprint → 选择 Docking666/AdToEarn 仓库
+# 说明：
+#   - runtime: docker + dockerfilePath: ./Dockerfile.slim（轻量镜像，无 Chromium）
+#   - 免费版：512MB RAM / 750h每月 / 闲置 15min 休眠（冷启动 30-60s）/ 磁盘重启即失
+#   - 密钥经环境变量注入，entrypoint.sh 每次启动写入 config/api_config.json，
+#     无需在 WebUI 重复填写（磁盘易失不影响密钥）
+services:
+  - type: web
+    name: adtoearn
+    runtime: docker
+    repo: https://github.com/Docking666/AdToEarn
+    branch: main
+    dockerfilePath: ./Dockerfile.slim
+    region: singapore   # 离国内较近（可选 oregon）
+    plan: free
+    healthCheckPath: /health
+    envVars:
+      # sync: false → 在 Render Dashboard 手工填写（不写入仓库，防泄露）
+      - key: OPENAI_API_KEY
+        sync: false
+      - key: ANTHROPIC_API_KEY
+        sync: false
+      # 以下使用仓库默认值即可（业务代码/entrypoint.sh 有同款默认）
+      - key: OPENAI_BASE_URL
+        value: https://api.openai.com/v1
+      - key: OPENAI_MODEL
+        value: gpt-4o
+      - key: OPENAI_VISION_MODEL
+        value: gpt-4o

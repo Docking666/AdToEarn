@@ -1,3 +1,14 @@
+---
+title: AdToEarn
+emoji: 🚀
+colorFrom: indigo
+colorTo: purple
+sdk: docker
+app_port: 7860
+pinned: false
+---
+<!-- ↑ Hugging Face Spaces 元数据（Docker SDK / 端口 7860），对 GitHub 渲染无影响；本地部署请忽略 -->
+
 # AdToEarn — AI 驱动的广告素材智能工作台
 
 > Let's use AI to Earn! 🚀

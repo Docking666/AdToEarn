@@ -1,0 +1,6 @@
+# 脚本与部署文件统一 LF 换行（防止 Windows CRLF 破坏容器内 sh 执行）
+*.sh text eol=lf
+Dockerfile text eol=lf
+Dockerfile.slim text eol=lf
+render.yaml text eol=lf
+entrypoint.sh text eol=lf
