@@ -567,6 +567,19 @@ async def audit_pivot(req: AuditPivotRequest):
                                 account=req.account, metric=req.metric)
 
 
+@app.get("/api/audit/export")
+async def audit_export(account: Optional[str] = None, days: Optional[int] = None):
+    """导出结构化 Excel（原始数据 + 打标列 + 透视 + 信号，3 个 Sheet）"""
+    from fastapi.responses import Response
+    content = audit_service.export_excel(account=account, days=days)
+    filename = f"adtoearn_audit_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
+    return Response(
+        content=content,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
 @app.get("/api/audit/records")
 async def audit_records(account: Optional[str] = None, days: Optional[int] = None, limit: int = 500):
     """原始投放记录（分页查看）"""

@@ -569,6 +569,7 @@
                     <button class="btn" :disabled="auditLoading.sample" @click="generateAuditSample">
                         {{ auditLoading.sample ? '生成中…' : '✨ 生成示例数据' }}
                     </button>
+                    <button class="btn" :disabled="!auditMeta.record_count" @click="exportAuditExcel">📊 导出 Excel</button>
                     <button class="btn danger" :disabled="!auditMeta.record_count" @click="clearAuditData">🗑 清空数据</button>
                     <span v-if="auditMeta.has_sample" class="badge mock">含示例数据</span>
                     <span class="audit-meta-text" v-if="auditMeta.record_count">

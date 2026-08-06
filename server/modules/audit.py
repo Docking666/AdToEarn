@@ -940,6 +940,114 @@ class AuditService:
             "metric": metric,
         }
 
+    # ==================== Excel 导出（Phase5） ====================
+    def export_excel(self, account: Optional[str] = None, days: Optional[int] = None,
+                     dimensions: Optional[list] = None) -> bytes:
+        """导出结构化 Excel（xlsx）：
+        Sheet1「原始数据」：raw 全字段 + 打标列展开（每标签组一列）+ mapped 派生指标
+        Sheet2「多维透视」：按标签组合聚合（若指定 dimensions 或有打标数据）
+        Sheet3「数据信号」：当前信号列表（含 impact/metrics）
+        返回 xlsx 文件字节
+        """
+        from openpyxl import Workbook
+        from openpyxl.styles import Font, PatternFill, Alignment
+        from openpyxl.utils import get_column_letter
+
+        records = self._filter(account=account, days=days)
+        wb = Workbook()
+
+        # ---- Sheet1: 原始数据 ----
+        ws = wb.active
+        ws.title = "原始数据"
+        # 收集列：raw 字段 + 标签组列 + 派生指标
+        lib = self._load_tag_lib()
+        group_names = {g["id"]: g["name"] for g in lib.get("groups", [])}
+        raw_fields = []
+        seen = set()
+        for r in records:
+            for k in r.get("raw", {}).keys():
+                if k not in seen:
+                    seen.add(k)
+                    raw_fields.append(k)
+        tag_group_ids = list(group_names.keys())
+        derived = ["CTR%", "CVR%", "CPC", "CPM", "CPA", "ROAS"]
+
+        header = raw_fields + [group_names.get(gid, gid) for gid in tag_group_ids] + derived
+        header_font = Font(bold=True, color="FFFFFF")
+        header_fill = PatternFill("solid", fgColor="4F46E5")
+        ws.append(header)
+        for c in range(1, len(header) + 1):
+            cell = ws.cell(row=1, column=c)
+            cell.font = header_font
+            cell.fill = header_fill
+            cell.alignment = Alignment(horizontal="center")
+
+        for r in records:
+            row = []
+            for f in raw_fields:
+                row.append(r.get("raw", {}).get(f, ""))
+            for gid in tag_group_ids:
+                tags = r.get("tags", {}).get(gid, [])
+                row.append("、".join(tags) if tags else "")
+            m = r.get("mapped", {})
+            row.extend([
+                m.get("ctr", 0), m.get("cvr", 0), m.get("cpc", 0),
+                m.get("cpm", 0), m.get("cpa", 0), m.get("roas", 0),
+            ])
+            ws.append(row)
+        # 列宽自适应（粗略）
+        for c in range(1, len(header) + 1):
+            ws.column_dimensions[get_column_letter(c)].width = max(12, min(30, len(str(header[c - 1])) * 2 + 4))
+
+        # ---- Sheet2: 多维透视 ----
+        ws2 = wb.create_sheet("多维透视")
+        tagged = [r for r in records if r.get("tags")]
+        ws2.append(["维度组合", "记录数", "花费", "转化", "曝光", "点击", "转化价值", "CTR%", "CPA", "ROAS"])
+        for c in range(1, 11):
+            ws2.cell(row=1, column=c).font = header_font
+            ws2.cell(row=1, column=c).fill = header_fill
+        if tagged:
+            dims = dimensions or list(group_names.keys())[:1]
+            combo_map = defaultdict(list)
+            for r in tagged:
+                tags = r.get("tags", {})
+                key_parts = []
+                for gid in dims:
+                    vals = tags.get(gid, [])
+                    key_parts.append(vals[0] if vals else "未标注")
+                combo_map[tuple(key_parts)].append(r)
+            for key, recs in combo_map.items():
+                m = self._calc(recs)
+                ws2.append([
+                    " + ".join(key), len(recs),
+                    round(m["spend"], 2), m["conversions"], m["impressions"], m["clicks"],
+                    round(m["conversion_value"], 2), m["ctr"], m["cpa"], m["roas"],
+                ])
+        else:
+            ws2.append(["暂无打标数据，无法透视"])
+
+        # ---- Sheet3: 数据信号 ----
+        ws3 = wb.create_sheet("数据信号")
+        signals = self.detect_signals(records)
+        ws3.append(["严重度", "分类", "标题", "描述", "影响金额", "影响说明", "账户", "日期", "指标详情"])
+        for c in range(1, 10):
+            ws3.cell(row=1, column=c).font = header_font
+            ws3.cell(row=1, column=c).fill = header_fill
+        for s in signals:
+            ws3.append([
+                s["severity"], s["category"], s["title"], s["description"],
+                s["impact"]["amount"], s["impact"]["desc"],
+                s.get("account", ""), s.get("date", ""),
+                json.dumps(s.get("metrics", {}), ensure_ascii=False),
+            ])
+
+        # 导出到内存
+        import io
+        buf = io.BytesIO()
+        wb.save(buf)
+        buf.seek(0)
+        return buf.getvalue()
+
     def _detect_roas_low(self, records, total, cfg) -> list:
         """ROAS 过低：账户维度，持续低于警戒线"""
         signals = []

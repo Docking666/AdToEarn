@@ -702,6 +702,27 @@ createApp({
       finally { auditLoading.clear = false; }
     }
 
+    // Phase5: 导出 Excel
+    async function exportAuditExcel() {
+      if (!auditMeta.record_count) return;
+      try {
+        const params = new URLSearchParams();
+        if (auditFilter.account) params.set("account", auditFilter.account);
+        if (auditFilter.days) params.set("days", auditFilter.days);
+        const res = await fetch(`/api/audit/export${params.toString() ? "?" + params : ""}`);
+        if (!res.ok) { alert("导出失败：" + res.status); return; }
+        const blob = await res.blob();
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = `adtoearn_audit_${new Date().toISOString().slice(0, 19).replace(/[:T]/g, "")}.xlsx`;
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        URL.revokeObjectURL(url);
+      } catch (err) { alert("导出失败：" + err.message); }
+    }
+
     async function refreshAudit() {
       await loadAuditMeta();
       await loadAuditTagLibrary();
@@ -1001,6 +1022,7 @@ createApp({
       auditLoading, auditFilter, auditChartType, auditTrendChart, auditAccountChart,
       auditMetricCards, severityLabel, severityBadge, fmtNum, fmtMoney,
       loadAuditAll, switchAuditChart, onAuditFileSelect, generateAuditSample, clearAuditData,
+      exportAuditExcel,
       // Phase3: 信号规则开关
       signalCategoryLabel, ruleCategoryLabel, toggleAuditRule, resetAuditRules, setRuleMethod,
       // Phase4: 多维透视
