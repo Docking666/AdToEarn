@@ -775,9 +775,9 @@
                                 </tbody>
                             </table>
                             <div class="audit-table-pager">
-                                <button class="btn small" :disabled="auditRecordOffset === 0" @click="auditRecordOffset = Math.max(0, auditRecordOffset - auditRecordLimit); loadAuditRecords()">上一页</button>
-                                <span class="audit-pager-info">{{ auditRecordOffset + 1 }}-{{ Math.min(auditRecordOffset + auditRecordLimit, auditRecordTotal) }} / {{ auditRecordTotal }}</span>
-                                <button class="btn small" :disabled="auditRecordOffset + auditRecordLimit >= auditRecordTotal" @click="auditRecordOffset = auditRecordOffset + auditRecordLimit; loadAuditRecords()">下一页</button>
+                                <button class="btn small" @click="goAuditPrevPage">上一页</button>
+                                <span class="audit-pager-info">{{ auditPagerInfo }}</span>
+                                <button class="btn small" :disabled="!hasAuditNextPage()" @click="goAuditNextPage">下一页</button>
                             </div>
                         </div>
                     </div>

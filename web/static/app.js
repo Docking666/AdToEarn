@@ -615,12 +615,43 @@ createApp({
         const d = await (await fetch(`/api/audit/records/tagged?${params}`)).json();
         auditRecords.value = d.records || [];
         auditRecordTotal.value = d.total || 0;
+        // 边界保护：offset 不能越界（数据被删/筛选后回卷）
+        if (auditRecordTotal.value > 0 && auditRecordOffset.value >= auditRecordTotal.value) {
+          auditRecordOffset.value = 0;
+        }
         // 更新展示字段（取 raw 字段，最多 8 列避免过宽）
         if (auditRecords.value.length) {
           auditDisplayFields.value = Object.keys(auditRecords.value[0].raw || {}).slice(0, 8);
         }
       } catch (e) { console.error(e); }
       finally { auditRecordsLoading.value = false; }
+    }
+
+    // 翻页信息 computed（避免模板里 ref + number 出 NaN）
+    const auditPagerInfo = computed(() => {
+      const start = auditRecordOffset.value || 0;
+      const total = auditRecordTotal.value || 0;
+      const end = total === 0 ? 0 : Math.min(start + auditRecordLimit, total);
+      return total === 0 ? '0 / 0' : (start + 1) + '-' + end + ' / ' + total;
+    });
+
+    // 翻页：显式方法避免模板里 ref + number = NaN 的坑
+    function goAuditPrevPage() {
+      const cur = auditRecordOffset.value || 0;
+      auditRecordOffset.value = Math.max(0, cur - auditRecordLimit);
+      loadAuditRecords();
+    }
+    function goAuditNextPage() {
+      const cur = auditRecordOffset.value || 0;
+      const total = auditRecordTotal.value || 0;
+      const maxStart = Math.max(0, total - auditRecordLimit);
+      auditRecordOffset.value = Math.min(cur + auditRecordLimit, maxStart);
+      loadAuditRecords();
+    }
+    function hasAuditNextPage() {
+      const cur = auditRecordOffset.value || 0;
+      const total = auditRecordTotal.value || 0;
+      return total > 0 && (cur + auditRecordLimit) < total;
     }
 
     async function loadAuditTagLibrary() {
@@ -1050,6 +1081,7 @@ createApp({
       auditDisplayFields, auditTagLibrary, showTagPanel, auditPendingTags, auditTagMode, auditCustomTags,
       loadAuditRecords, loadAuditTagLibrary, auditTagGroupName, toggleSelectAll,
       togglePendingTag, applyBatchTag, addCustomTag,
+      goAuditPrevPage, goAuditNextPage, hasAuditNextPage, auditPagerInfo,
       // 悬浮日志
       logPanel, logBody, filteredLogs, logFabRef,
       toggleLogPanel, toggleLogFilter, clearLogs,
