@@ -388,6 +388,8 @@ body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC"
 .audit-tag-chip.selected { background: rgba(99,102,241,.18); border-color: var(--acc); color: #a5b4fc; }
 .audit-tag-actions { display: flex; gap: 8px; align-items: center; margin-top: 10px; }
 .audit-tag-actions .field.select { min-width: 90px; }
+.audit-tg-custom { display: flex; gap: 6px; align-items: center; margin-top: 8px; }
+.audit-tg-input { flex: 1; min-width: 120px; padding: 6px 10px; font-size: 12px; }
 
 .audit-data-table { overflow-x: auto; }
 .audit-data-table table { width: 100%; border-collapse: collapse; font-size: 12px; min-width: 600px; }

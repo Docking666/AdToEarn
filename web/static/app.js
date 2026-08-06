@@ -324,6 +324,7 @@ createApp({
     const showTagPanel = ref(false);
     const auditPendingTags = reactive({});      // 待打标的标签 {group_id: [tags]}
     const auditTagMode = ref("add");
+    const auditCustomTags = reactive({});       // 自定义标签输入 {group_id: input_text}
 
     const auditMetricCards = computed(() => {
       const m = auditSummary.value?.metrics;
@@ -647,6 +648,20 @@ createApp({
       const idx = auditPendingTags[gid].indexOf(tag);
       if (idx >= 0) auditPendingTags[gid].splice(idx, 1);
       else auditPendingTags[gid].push(tag);
+    }
+
+    // 自定义标签：添加到标签库 + 自动选中待打标
+    async function addCustomTag(gid) {
+      const text = (auditCustomTags[gid] || "").trim();
+      if (!text) return;
+      try {
+        const res = await fetch(`/api/audit/tags/add?group_id=${encodeURIComponent(gid)}&tag=${encodeURIComponent(text)}`, { method: "POST" });
+        const d = await res.json();
+        if (!d.ok) { alert("添加失败：" + (d.error || "标签组不存在")); return; }
+        auditCustomTags[gid] = "";           // 清空输入
+        await loadAuditTagLibrary();          // 刷新标签库（新 chip 出现）
+        togglePendingTag(gid, text);          // 自动选中，直接参与打标
+      } catch (err) { alert("添加失败：" + err.message); }
     }
 
     async function applyBatchTag() {
@@ -1032,9 +1047,9 @@ createApp({
       onAuditDrop, handleAuditFile, auditMapLayerLabel, onAuditFieldMapChange, confirmAuditImport,
       // Phase2: 原始数据表格 + 批量打标
       auditRecords, auditRecordTotal, auditRecordOffset, auditRecordsLoading, auditSelectedRows,
-      auditDisplayFields, auditTagLibrary, showTagPanel, auditPendingTags, auditTagMode,
+      auditDisplayFields, auditTagLibrary, showTagPanel, auditPendingTags, auditTagMode, auditCustomTags,
       loadAuditRecords, loadAuditTagLibrary, auditTagGroupName, toggleSelectAll,
-      togglePendingTag, applyBatchTag,
+      togglePendingTag, applyBatchTag, addCustomTag,
       // 悬浮日志
       logPanel, logBody, filteredLogs, logFabRef,
       toggleLogPanel, toggleLogFilter, clearLogs,

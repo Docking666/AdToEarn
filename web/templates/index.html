@@ -727,6 +727,15 @@
                                           :class="{ selected: auditPendingTags[g.id]?.includes(t) }"
                                           @click="togglePendingTag(g.id, t)">{{ t }}</span>
                                 </div>
+                                <!-- 自定义标签输入（Phase2 补充） -->
+                                <div class="audit-tg-custom">
+                                    <input v-model="auditCustomTags[g.id]"
+                                           class="field input audit-tg-input"
+                                           :placeholder="'自定义 ' + g.name + ' 标签…'"
+                                           @keyup.enter="addCustomTag(g.id)"
+                                           @keyup.esc="auditCustomTags[g.id] = ''">
+                                    <button class="btn small" :disabled="!auditCustomTags[g.id]?.trim()" @click="addCustomTag(g.id)">+ 添加</button>
+                                </div>
                             </div>
                             <div class="audit-tag-actions">
                                 <select v-model="auditTagMode" class="field select">
