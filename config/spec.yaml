@@ -463,14 +463,19 @@ audit:
       description: "某账户/组合当日花费显著高于自身历史水平（MAD 抗离群基线）"
       category: "surge"          # surge | decay | inefficiency | data_quality | hint
       default_enabled: true
+      # 检测方法：window=窗口累计法（最近N天累计 vs 历史日均中位数，抗噪声）；
+      #           daily=逐日法（每日 MAD z-score 逐日检测，对单日突变更敏感）
+      # 可在前端规则面板切换
+      method: "window"
       # MAD 基线窗口（天）
       baseline_window: 14
       # 同周几窗口（天，0=用连续窗口）
       weekday_window: 4
-      # 三层严重度阈值
+      # 三层严重度阈值（daily 方法用）
       z_threshold: 3.0           # 中高严重度（保留，备用）
       z_high_threshold: 5.0      # 高严重度（保留，备用）
-      min_change_pct: 100.0      # 最小变化幅度（%）：窗口累计需翻倍才算突增（过滤随机波动）
+      # window 方法阈值：最小变化幅度（%）：窗口累计需翻倍才算突增（过滤随机波动）
+      min_change_pct: 100.0
       min_impact_amount: 5000.0  # 业务影响下限（元），低于不触发
       duration_days: 2           # 持续天数（窗口累计天数，防单日噪声）
       # 业务影响估算：花费突增的超额花费
@@ -481,6 +486,8 @@ audit:
       description: "曝光足量时 CTR 显著低于自身历史水平（素材疲劳 / 展示质量下降）"
       category: "decay"
       default_enabled: true
+      # 检测方法：window=窗口累计法；daily=逐日法（可在前端切换）
+      method: "window"
       baseline_window: 14
       weekday_window: 4
       z_threshold: 3.0
@@ -532,6 +539,29 @@ audit:
       default_enabled: true
       min_impressions: 10000
       min_impact_amount: 0.0
+    # ---- 权重变化类（Phase4，需标签数据） ----
+    weight_shift:
+      name: "标签组合权重变化"
+      description: "某标签组合在本批数据中的花费占比显著变化（策略调整迹象），仅在有打标数据时生效"
+      category: "shift"
+      default_enabled: true
+      # 近期窗口（天）与历史基线窗口（天）
+      recent_days: 7
+      baseline_days: 14
+      # 占比变化阈值（绝对值，如 0.2 = 占比变化超 20% 触发）
+      min_share_change: 0.2
+      # 组合最小占比（低于此占比的组合忽略，防噪声）
+      min_share: 0.05
+      # 最小花费影响（元）
+      min_impact_amount: 1000.0
+
+  # ------------------------------------------------------------
+  # 多维透视（Phase4）
+  # 按标签组组合聚合：dimensions=[tag_group_id, ...] → 各组合的 sum/avg 指标
+  # ------------------------------------------------------------
+  pivot:
+    # 透视聚合的指标（可透视字段）
+    metrics: ["spend", "conversions", "impressions", "clicks", "conversion_value"]
 
 # ------------------------------------------------------------
 # LLM 大模型提供商模板 (经 LiteLLM 网关统一调用)

@@ -345,7 +345,10 @@ class AuditService:
         return settings.audit_rule_state_file
 
     def _load_rule_state(self) -> dict:
-        """加载用户规则启用状态（持久化），与 spec 默认合并"""
+        """加载用户规则启用状态（持久化），与 spec 默认合并
+        状态格式：{rule_id: {"enabled": bool, "method": "window"|"daily"}}
+        兼容旧格式：{rule_id: bool}
+        """
         saved = {}
         if self._rule_state_file.exists():
             try:
@@ -355,8 +358,20 @@ class AuditService:
         rules = settings.audit_signal_rules
         state = {}
         for rid, rcfg in rules.items():
-            default = bool(rcfg.get("default_enabled", True))
-            state[rid] = saved.get(rid, default)
+            default_enabled = bool(rcfg.get("default_enabled", True))
+            default_method = rcfg.get("method", "window")
+            entry = saved.get(rid)
+            if isinstance(entry, dict):
+                state[rid] = {
+                    "enabled": bool(entry.get("enabled", default_enabled)),
+                    "method": entry.get("method", default_method),
+                }
+            else:
+                # 旧格式：直接 bool
+                state[rid] = {
+                    "enabled": default_enabled if entry is None else bool(entry),
+                    "method": default_method,
+                }
         return state
 
     def _save_rule_state(self, state: dict):
@@ -366,30 +381,38 @@ class AuditService:
         )
 
     def get_rule_states(self) -> dict:
-        """获取全部信号规则定义 + 启用状态"""
+        """获取全部信号规则定义 + 启用状态 + 检测方法"""
         rules = settings.audit_signal_rules
         state = self._load_rule_state()
         result = {}
         for rid, rcfg in rules.items():
+            entry = state.get(rid, {})
             result[rid] = {
                 "id": rid,
                 "name": rcfg.get("name", rid),
                 "description": rcfg.get("description", ""),
                 "category": rcfg.get("category", "hint"),
-                "enabled": state.get(rid, True),
+                "enabled": entry.get("enabled", True),
+                "method": entry.get("method", rcfg.get("method", "window")),
+                "methods": ["window", "daily"] if rcfg.get("method") else [],
                 "default_enabled": bool(rcfg.get("default_enabled", True)),
             }
         return result
 
-    def set_rule_state(self, rule_id: str, enabled: bool) -> dict:
-        """设置单个规则启用状态"""
+    def set_rule_state(self, rule_id: str, enabled: bool, method: Optional[str] = None) -> dict:
+        """设置单个规则启用状态（可选更新检测方法）"""
         rules = settings.audit_signal_rules
         if rule_id not in rules:
             raise ValueError(f"未知规则: {rule_id}")
+        if method is not None and method not in ("window", "daily"):
+            raise ValueError(f"未知检测方法: {method}（应为 window 或 daily）")
         state = self._load_rule_state()
-        state[rule_id] = bool(enabled)
+        entry = state.setdefault(rule_id, {})
+        entry["enabled"] = bool(enabled)
+        if method:
+            entry["method"] = method
         self._save_rule_state(state)
-        return {"ok": True, "rule_id": rule_id, "enabled": bool(enabled)}
+        return {"ok": True, "rule_id": rule_id, "enabled": bool(enabled), "method": entry.get("method")}
 
     def reset_rule_states(self) -> dict:
         """重置全部规则为默认启用"""
@@ -398,7 +421,7 @@ class AuditService:
 
     def _is_rule_enabled(self, rule_id: str) -> bool:
         state = self._load_rule_state()
-        return state.get(rule_id, True)
+        return state.get(rule_id, {}).get("enabled", True) if isinstance(state.get(rule_id), dict) else bool(state.get(rule_id, True))
 
     # ---- 统计工具（MAD 抗离群） ----
     @staticmethod
@@ -456,13 +479,15 @@ class AuditService:
         signals = []
         rules = settings.audit_signal_rules
         state = self._load_rule_state()
+        # 展开为 {rule_id: enabled_bool}，便于判断
+        enabled_map = {rid: entry.get("enabled", True) for rid, entry in state.items()}
 
         # 全局聚合
         total = self._calc(records)
         dates_all = sorted({r.get("mapped", {}).get("date", "") for r in records})
 
         # ---- 提示类：样本不足 / 曝光不足 ----
-        if state.get("small_sample", True):
+        if enabled_map.get("small_sample", True):
             cfg = rules.get("small_sample", {})
             min_days = int(cfg.get("min_sample_days", 14))
             if len(dates_all) < min_days:
@@ -473,7 +498,7 @@ class AuditService:
                     impact_desc="统计可靠性不足",
                     metrics={"days": len(dates_all), "min_days": min_days},
                 ))
-        if state.get("low_impressions", True):
+        if enabled_map.get("low_impressions", True):
             cfg = rules.get("low_impressions", {})
             min_imp = int(cfg.get("min_impressions", 10000))
             if total["impressions"] < min_imp:
@@ -490,23 +515,37 @@ class AuditService:
             dates = sorted({r.get("mapped", {}).get("date", "") for r in acc_recs})
             day_map = {d: self._calc([r for r in acc_recs if r.get("mapped", {}).get("date") == d]) for d in dates}
 
-            # 花费突增（MAD + 同周几季节性基线）
-            if state.get("spend_surge", True):
-                signals += self._detect_spend_surge(acc, dates, day_map, rules.get("spend_surge", {}))
+            # 花费突增（按 method 分发：window 窗口累计法 / daily 逐日 MAD）
+            if enabled_map.get("spend_surge", True):
+                cfg = dict(rules.get("spend_surge", {}))
+                method = state.get("spend_surge", {}).get("method") or cfg.get("method", "window")
+                if method == "daily":
+                    signals += self._detect_spend_surge_daily(acc, dates, day_map, cfg)
+                else:
+                    signals += self._detect_spend_surge_window(acc, dates, day_map, cfg)
 
-            # CTR 骤降（MAD + 同周几 + 曝光下限）
-            if state.get("ctr_drop", True):
-                signals += self._detect_ctr_drop(acc, dates, day_map, rules.get("ctr_drop", {}))
+            # CTR 骤降（按 method 分发）
+            if enabled_map.get("ctr_drop", True):
+                cfg = dict(rules.get("ctr_drop", {}))
+                method = state.get("ctr_drop", {}).get("method") or cfg.get("method", "window")
+                if method == "daily":
+                    signals += self._detect_ctr_drop_daily(acc, dates, day_map, cfg)
+                else:
+                    signals += self._detect_ctr_drop_window(acc, dates, day_map, cfg)
 
             # 连续花费无转化（数据质量分流：追踪中断 vs 业务下滑）
-            if state.get("no_conversion", True):
+            if enabled_map.get("no_conversion", True):
                 signals += self._detect_no_conversion(acc, dates, day_map, rules.get("no_conversion", {}))
 
         # ---- 账户对比（ROAS 过低 / CPA 过高） ----
-        if state.get("roas_low", True):
+        if enabled_map.get("roas_low", True):
             signals += self._detect_roas_low(records, total, rules.get("roas_low", {}))
-        if state.get("cpa_high", True):
+        if enabled_map.get("cpa_high", True):
             signals += self._detect_cpa_high(records, total, rules.get("cpa_high", {}))
+
+        # ---- 标签组合权重变化（Phase4，需打标数据） ----
+        if enabled_map.get("weight_shift", True):
+            signals += self._detect_weight_shift(records, rules.get("weight_shift", {}))
 
         # ---- 排序：severity + impact 金额降序 ----
         sev_order = {SEV_CRITICAL: 0, SEV_HIGH: 1, SEV_MEDIUM: 2, SEV_LOW: 3}
@@ -514,16 +553,9 @@ class AuditService:
         return signals
 
     # ---- 各规则检测实现 ----
-    def _baseline_values(self, dates: list, day_map: dict, field: str,
-                         weekday_window: int = 0) -> list:
-        """构建基线值列表：weekday_window>0 时取同周几历史，否则取连续窗口历史"""
-        # 返回与 dates 等长的「截至当日的历史基线窗口」较复杂；简化：
-        # 调用方传过来的是全序列，这里直接返回全量历史值（不含最后一天）
-        values = [day_map[d][field] for d in dates]
-        return values
 
-    def _detect_spend_surge(self, acc, dates, day_map, cfg) -> list:
-        """花费突增：窗口累计法（业界实践）
+    def _detect_spend_surge_window(self, acc, dates, day_map, cfg) -> list:
+        """花费突增：窗口累计法（业界实践，默认）
         最近 N 天（duration_days）累计花费 vs 历史日均中位数 × N：
           - 累计超额 = 窗口累计 - 历史日均 × 窗口
           - 触发：超额比例 ≥ min_change_pct 且 超额金额 ≥ min_impact
@@ -569,8 +601,8 @@ class AuditService:
             last_trigger_idx = i
         return signals
 
-    def _detect_ctr_drop(self, acc, dates, day_map, cfg) -> list:
-        """CTR 骤降：窗口累计法（业界实践）
+    def _detect_ctr_drop_window(self, acc, dates, day_map, cfg) -> list:
+        """CTR 骤降：窗口累计法（业界实践，默认）
         最近 N 天窗口 CTR（累计点击/累计曝光）vs 历史窗口 CTR 中位数：
           触发条件：下降比例 ≥ min_change_pct 且 曝光足够 且 预估损失 ≥ min_impact
         非重叠窗口去重。
@@ -681,6 +713,232 @@ class AuditService:
             else:
                 streak = 0
         return signals
+
+    # ---- 逐日法（daily）：单日 MAD z-score，对单日突变敏感 ----
+    def _detect_spend_surge_daily(self, acc, dates, day_map, cfg) -> list:
+        """花费突增：逐日法
+        每日 MAD 稳健 z-score（同周几样本≥3 时用同周几，否则连续历史）：
+          - z ≥ z_threshold 且 变化幅度 ≥ min_change_pct 且 超额 ≥ min_impact
+          - 连续 duration_days 天达标才触发（防单日噪声）
+        """
+        signals = []
+        z_th = float(cfg.get("z_threshold", 3.0))
+        z_hi = float(cfg.get("z_high_threshold", 5.0))
+        min_pct = float(cfg.get("min_change_pct", 100.0))
+        min_impact = float(cfg.get("min_impact_amount", 5000.0))
+        duration = max(int(cfg.get("duration_days", 2)), 1)
+        wd_win = int(cfg.get("weekday_window", 4))
+        streak = 0
+        last_trigger_idx = -duration
+        for i, d in enumerate(dates):
+            if i < 1:
+                continue
+            if i - last_trigger_idx < duration:
+                continue
+            cur = day_map[d]
+            spend = cur["spend"]
+            same_wd = [day_map[x]["spend"] for x in dates[:i]
+                       if datetime.strptime(x, "%Y-%m-%d").weekday() == datetime.strptime(d, "%Y-%m-%d").weekday()]
+            hist = same_wd if wd_win > 0 and len(same_wd) >= 3 else [day_map[x]["spend"] for x in dates[:i]]
+            if not hist:
+                continue
+            z = self._mad_zscore(hist, spend)
+            median = statistics.median(hist)
+            pct_change = (spend - median) / median * 100 if median > 0 else 0
+            excess = spend - median
+            is_surge = (z >= z_th and pct_change >= min_pct and excess >= min_impact)
+            if is_surge:
+                streak += 1
+                if streak >= duration:
+                    severity = SEV_HIGH if z >= z_hi else SEV_MEDIUM
+                    signals.append(self._mk_signal(
+                        severity, "surge", f"花费突增（z={z:.1f}）",
+                        f"「{acc}」{d} 花费 ¥{spend:,.2f}，相对历史中位 ¥{median:,.2f} 上涨 {pct_change:.0f}%（逐日 MAD z={z:.1f}，持续 {streak} 天）",
+                        "检查是否误配预算/出价、流量质量下降或异常点击",
+                        account=acc, date=d, impact_amount=excess,
+                        impact_desc="预估超额花费",
+                        metrics={"z_score": round(z, 2), "magnitude": f"{pct_change:.0f}%",
+                                 "median": round(median, 2), "duration_days": streak, "method": "daily"},
+                    ))
+                    last_trigger_idx = i
+            else:
+                streak = 0
+        return signals
+
+    def _detect_ctr_drop_daily(self, acc, dates, day_map, cfg) -> list:
+        """CTR 骤降：逐日法（每日 MAD z-score，对单日变化敏感）"""
+        signals = []
+        z_th = float(cfg.get("z_threshold", 3.0))
+        z_hi = float(cfg.get("z_high_threshold", 5.0))
+        min_pct = float(cfg.get("min_change_pct", 50.0))
+        min_imp = float(cfg.get("min_impressions", 10000))
+        min_impact = float(cfg.get("min_impact_amount", 2000.0))
+        duration = max(int(cfg.get("duration_days", 2)), 1)
+        wd_win = int(cfg.get("weekday_window", 4))
+        streak = 0
+        last_trigger_idx = -duration
+        for i, d in enumerate(dates):
+            if i < 1:
+                continue
+            if i - last_trigger_idx < duration:
+                continue
+            cur = day_map[d]
+            if cur["impressions"] < min_imp or cur["ctr"] <= 0:
+                streak = 0
+                continue
+            same_wd = [day_map[x]["ctr"] for x in dates[:i]
+                       if datetime.strptime(x, "%Y-%m-%d").weekday() == datetime.strptime(d, "%Y-%m-%d").weekday()]
+            hist = same_wd if wd_win > 0 and len(same_wd) >= 3 else [day_map[x]["ctr"] for x in dates[:i]]
+            if not hist:
+                continue
+            z = self._mad_zscore(hist, cur["ctr"])
+            median = statistics.median(hist)
+            pct_drop = (median - cur["ctr"]) / median * 100 if median > 0 else 0
+            lost_clicks = cur["impressions"] * (median - cur["ctr"]) / 100
+            avg_cpc = cur["spend"] / cur["clicks"] if cur["clicks"] > 0 else 0
+            impact = lost_clicks * avg_cpc
+            is_drop = (z <= -z_th and pct_drop >= min_pct and impact >= min_impact)
+            if is_drop:
+                streak += 1
+                if streak >= duration:
+                    severity = SEV_HIGH if z <= -z_hi else SEV_MEDIUM
+                    signals.append(self._mk_signal(
+                        severity, "decay", f"点击率骤降（{pct_drop:.0f}%）",
+                        f"「{acc}」{d} CTR {cur['ctr']}%，相对历史中位 {median}% 下降 {pct_drop:.0f}%（逐日 MAD z={z:.1f}，持续 {streak} 天）",
+                        "检查素材疲劳、受众定向变化或展示位置质量",
+                        account=acc, date=d, impact_amount=impact,
+                        impact_desc="预估因 CTR 下降损失",
+                        metrics={"z_score": round(z, 2), "magnitude": f"{pct_drop:.0f}%",
+                                 "median": median, "duration_days": streak, "method": "daily"},
+                    ))
+                    last_trigger_idx = i
+            else:
+                streak = 0
+        return signals
+
+    # ---- 标签组合权重变化（Phase4） ----
+    def _detect_weight_shift(self, records, cfg) -> list:
+        """权重变化信号：某标签组合在本批数据中花费占比显著变化
+        近期窗口（recent_days）内组合花费占比 vs 历史基线窗口（baseline_days）占比：
+          - 占比变化绝对值 ≥ min_share_change 且 组合占比 ≥ min_share 才触发
+          - 提示「策略调整迹象」
+        """
+        signals = []
+        recent_days = int(cfg.get("recent_days", 7))
+        baseline_days = int(cfg.get("baseline_days", 14))
+        min_share_change = float(cfg.get("min_share_change", 0.2))
+        min_share = float(cfg.get("min_share", 0.05))
+        min_impact = float(cfg.get("min_impact_amount", 1000.0))
+
+        # 只有打标数据才参与
+        tagged = [r for r in records if r.get("tags")]
+        if not tagged or len(tagged) < 10:
+            return signals
+
+        today = date.today()
+        recent_cutoff = (today - timedelta(days=recent_days)).isoformat()
+        baseline_cutoff = (today - timedelta(days=baseline_days)).isoformat()
+
+        def share_by_combo(recs, period_start, period_end=None):
+            """计算每个标签组合的花费占比（组合 = 全部标签组值拼接）"""
+            combo_spend = defaultdict(float)
+            total_spend = 0.0
+            for r in recs:
+                d = r.get("mapped", {}).get("date", "")
+                if d < period_start:
+                    continue
+                if period_end and d > period_end:
+                    continue
+                tags = r.get("tags", {})
+                # 组合键：排序后的所有标签值拼接（含账户）
+                combo_parts = [r.get("mapped", {}).get("account", "未分组")]
+                for gid in sorted(tags.keys()):
+                    combo_parts.extend(sorted(tags[gid]))
+                key = " · ".join(combo_parts)
+                spend = float(r.get("mapped", {}).get("spend", 0))
+                combo_spend[key] += spend
+                total_spend += spend
+            shares = {}
+            if total_spend > 0:
+                for k, v in combo_spend.items():
+                    shares[k] = v / total_spend
+            return shares, total_spend
+
+        # 近期占比 vs 基线占比
+        recent_share, recent_total = share_by_combo(tagged, recent_cutoff)
+        baseline_share, baseline_total = share_by_combo(tagged, baseline_cutoff, recent_cutoff)
+        if not recent_share or not baseline_share:
+            return signals
+
+        # 检测变化（近期上升的组合）
+        for combo, recent_pct in recent_share.items():
+            if recent_pct < min_share:
+                continue
+            base_pct = baseline_share.get(combo, 0.0)
+            change = recent_pct - base_pct
+            if abs(change) < min_share_change:
+                continue
+            impact = recent_total * abs(change)  # 占比变化 × 近期总花费
+            if impact < min_impact:
+                continue
+            direction = "上升" if change > 0 else "下降"
+            severity = SEV_MEDIUM if abs(change) >= min_share_change * 1.5 else SEV_LOW
+            signals.append(self._mk_signal(
+                severity, "shift", f"组合权重{direction}（{abs(change) * 100:.0f}%）",
+                f"组合「{combo}」花费占比从基线期 {base_pct * 100:.0f}% 变化至近期 {recent_pct * 100:.0f}%"
+                f"（{direction} {abs(change) * 100:.0f}%）",
+                "关注该组合的投放策略调整迹象，验证是否有意为之",
+                impact_amount=impact, impact_desc="占比变化对应的预算规模",
+                metrics={"recent_share": round(recent_pct, 3), "baseline_share": round(base_pct, 3),
+                         "change": round(change, 3), "recent_days": recent_days},
+            ))
+        return signals
+
+    # ==================== 多维透视（Phase4） ====================
+    def pivot(self, dimensions: list, days: Optional[int] = None,
+              account: Optional[str] = None, metric: str = "spend") -> dict:
+        """多维透视：按标签组组合聚合
+        dimensions: 标签组 ID 列表（如 ["creative_keyword", "audience"]）
+        返回每个组合的 sum/avg 指标 + 记录数
+        """
+        if not dimensions:
+            return {"combinations": [], "total": {}}
+        records = self._filter(account=account, days=days)
+        tagged = [r for r in records if r.get("tags")]
+        if not tagged:
+            return {"combinations": [], "total": self._calc(records)}
+
+        # 维度名映射
+        lib = self._load_tag_lib()
+        group_names = {g["id"]: g["name"] for g in lib.get("groups", [])}
+
+        combo_map = defaultdict(list)
+        for r in tagged:
+            tags = r.get("tags", {})
+            # 组合键：每个维度的第一个标签值（或「未标注」）
+            key_parts = []
+            for gid in dimensions:
+                vals = tags.get(gid, [])
+                key_parts.append(vals[0] if vals else "未标注")
+            combo_map[tuple(key_parts)].append(r)
+
+        combinations = []
+        for key, recs in combo_map.items():
+            m = self._calc(recs)
+            m["dimensions"] = dict(zip(dimensions, key))
+            m["dimension_labels"] = {gid: group_names.get(gid, gid) for gid in dimensions}
+            m["record_count"] = len(recs)
+            combinations.append(m)
+
+        # 按 metric 排序（默认 spend 降序）
+        combinations.sort(key=lambda c: c.get(metric, 0), reverse=True)
+        return {
+            "combinations": combinations,
+            "total": self._calc(tagged),
+            "dimensions": dimensions,
+            "dimension_labels": {gid: group_names.get(gid, gid) for gid in dimensions},
+            "metric": metric,
+        }
 
     def _detect_roas_low(self, records, total, cfg) -> list:
         """ROAS 过低：账户维度，持续低于警戒线"""

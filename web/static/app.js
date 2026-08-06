@@ -292,6 +292,11 @@ createApp({
     const auditSignals = ref([]);          // 数据信号（统一 schema）
     const auditRules = ref({});            // 信号规则 + 启用状态
     const showRulePanel = ref(false);      // 规则配置面板开关
+    // Phase4: 多维透视
+    const auditPivotDims = ref([]);        // 选择的维度（标签组 ID）
+    const auditPivotMetric = ref("spend"); // 排序指标
+    const auditPivotResult = ref(null);    // 透视结果
+    const auditPivotLoading = ref(false);
     const auditLoading = reactive({ sample: false, clear: false, import: false, detect: false });
     const auditFilter = reactive({ account: "", days: 0 });
     const auditChartType = ref("volume");
@@ -383,10 +388,10 @@ createApp({
     // ===== 信号规则开关（Phase3） =====
     const signalCategoryLabels = {
       surge: "🔥 突增", decay: "📉 衰减", inefficiency: "⚠️ 低效",
-      data_quality: "🛠 数据质量", hint: "💡 提示",
+      data_quality: "🛠 数据质量", shift: "🔄 权重变化", hint: "💡 提示",
     };
     const signalCategoryLabel = (c) => signalCategoryLabels[c] || c;
-    const ruleCategoryLabel = (c) => ({ surge: "突增", decay: "衰减", inefficiency: "低效", data_quality: "数据质量", hint: "提示" }[c] || c);
+    const ruleCategoryLabel = (c) => ({ surge: "突增", decay: "衰减", inefficiency: "低效", data_quality: "数据质量", shift: "权重变化", hint: "提示" }[c] || c);
 
     async function toggleAuditRule(rid, e) {
       const enabled = e.target.checked;
@@ -405,6 +410,43 @@ createApp({
         await fetch("/api/audit/rules/reset", { method: "POST" });
         await loadAuditAll();
       } catch (err) { console.error(err); }
+    }
+
+    async function setRuleMethod(rid, method) {
+      try {
+        await fetch("/api/audit/rules", {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ rule_id: rid, enabled: auditRules.value[rid]?.enabled ?? true, method }),
+        });
+        if (auditRules.value[rid]) auditRules.value[rid].method = method;
+        await loadAuditAll();  // 用新方法重算信号
+      } catch (err) { console.error(err); }
+    }
+
+    // ===== Phase4: 多维透视 =====
+    async function loadAuditPivot() {
+      if (!auditPivotDims.value.length) {
+        alert("请至少选择一个透视维度");
+        return;
+      }
+      auditPivotLoading.value = true;
+      auditPivotResult.value = null;
+      try {
+        const params = new URLSearchParams();
+        if (auditFilter.account) params.set("account", auditFilter.account);
+        if (auditFilter.days) params.set("days", auditFilter.days);
+        const res = await fetch(`/api/audit/pivot${params.toString() ? "?" + params : ""}`, {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ dimensions: auditPivotDims.value, metric: auditPivotMetric.value }),
+        });
+        const d = await res.json();
+        if (res.ok) {
+          auditPivotResult.value = d;
+        } else {
+          alert("透视失败：" + (d.detail || JSON.stringify(d)));
+        }
+      } catch (err) { alert("透视失败：" + err.message); }
+      finally { auditPivotLoading.value = false; }
     }
 
     function switchAuditChart(type) {
@@ -960,7 +1002,9 @@ createApp({
       auditMetricCards, severityLabel, severityBadge, fmtNum, fmtMoney,
       loadAuditAll, switchAuditChart, onAuditFileSelect, generateAuditSample, clearAuditData,
       // Phase3: 信号规则开关
-      signalCategoryLabel, ruleCategoryLabel, toggleAuditRule, resetAuditRules,
+      signalCategoryLabel, ruleCategoryLabel, toggleAuditRule, resetAuditRules, setRuleMethod,
+      // Phase4: 多维透视
+      auditPivotDims, auditPivotMetric, auditPivotResult, auditPivotLoading, loadAuditPivot,
       // Phase1: 拖拽 + 字段映射
       auditDragOver, auditUploadFile, auditFieldDetect, auditFieldMapEdit, auditStandardFields,
       onAuditDrop, handleAuditFile, auditMapLayerLabel, onAuditFieldMapChange, confirmAuditImport,

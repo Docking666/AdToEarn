@@ -156,6 +156,15 @@ class AuditRuleStateRequest(BaseModel):
     """信号规则开关请求"""
     rule_id: str = ""
     enabled: bool = True
+    method: Optional[str] = None  # window | daily（可选切换）
+
+
+class AuditPivotRequest(BaseModel):
+    """多维透视请求"""
+    dimensions: list = []        # 标签组 ID 列表
+    metric: str = "spend"        # 排序指标
+    days: Optional[int] = None
+    account: Optional[str] = None
 
 
 # ==================== 页面路由 ====================
@@ -534,11 +543,11 @@ async def audit_rules():
 
 @app.post("/api/audit/rules")
 async def audit_rules_set(req: AuditRuleStateRequest):
-    """设置单个信号规则启用状态（勾选启用/禁用）"""
+    """设置单个信号规则启用状态（勾选启用/禁用，可选切换检测方法）"""
     if not req.rule_id:
         raise HTTPException(status_code=400, detail="rule_id 不能为空")
     try:
-        return audit_service.set_rule_state(req.rule_id, req.enabled)
+        return audit_service.set_rule_state(req.rule_id, req.enabled, req.method)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
@@ -547,6 +556,15 @@ async def audit_rules_set(req: AuditRuleStateRequest):
 async def audit_rules_reset():
     """重置全部信号规则为默认启用"""
     return audit_service.reset_rule_states()
+
+
+@app.post("/api/audit/pivot")
+async def audit_pivot(req: AuditPivotRequest):
+    """多维透视：按标签组组合聚合（Phase4）"""
+    if not req.dimensions:
+        raise HTTPException(status_code=400, detail="dimensions 不能为空（至少选一个标签组）")
+    return audit_service.pivot(dimensions=req.dimensions, days=req.days,
+                                account=req.account, metric=req.metric)
 
 
 @app.get("/api/audit/records")

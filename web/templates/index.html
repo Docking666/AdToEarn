@@ -652,6 +652,56 @@
                         </div>
                     </div>
 
+                    <!-- 多维透视（Phase4）：按标签组合聚合 -->
+                    <div class="audit-chart-card">
+                        <div class="audit-chart-head">
+                            <h3>多维透视（按标签组合）</h3>
+                            <div class="audit-pivot-tools">
+                                <select v-model="auditPivotMetric" class="field select audit-pivot-metric">
+                                    <option value="spend">按花费</option>
+                                    <option value="conversions">按转化</option>
+                                    <option value="conversion_value">按转化价值</option>
+                                    <option value="roas">按 ROAS</option>
+                                    <option value="ctr">按 CTR</option>
+                                </select>
+                                <button class="btn small" @click="loadAuditPivot">透视</button>
+                            </div>
+                        </div>
+                        <div class="audit-pivot-dims">
+                            <label class="field-label">选择维度（可多选）</label>
+                            <div class="audit-pivot-dims-list">
+                                <label v-for="g in auditTagLibrary.groups" :key="g.id" class="audit-pivot-dim">
+                                    <input type="checkbox" :value="g.id" v-model="auditPivotDims">
+                                    {{ g.name }}
+                                </label>
+                            </div>
+                            <p class="audit-fm-hint">基于行级标签组合聚合各维度指标（需先在上方打标；未标注组合归入「未标注」）</p>
+                        </div>
+                        <div v-if="auditPivotResult" class="audit-pivot-result">
+                            <div class="audit-pivot-table">
+                                <table>
+                                    <thead>
+                                        <tr>
+                                            <th v-for="d in auditPivotResult.dimensions" :key="d">{{ auditPivotResult.dimension_labels[d] }}</th>
+                                            <th>花费</th><th>转化</th><th>CTR</th><th>CPA</th><th>ROAS</th><th>记录</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody>
+                                        <tr v-for="c in auditPivotResult.combinations" :key="JSON.stringify(c.dimensions)">
+                                            <td v-for="d in auditPivotResult.dimensions" :key="d">{{ c.dimensions[d] }}</td>
+                                            <td>¥{{ fmtMoney(c.spend) }}</td>
+                                            <td>{{ fmtNum(c.conversions) }}</td>
+                                            <td>{{ c.ctr }}%</td>
+                                            <td>¥{{ fmtMoney(c.cpa) }}</td>
+                                            <td>{{ c.roas }}</td>
+                                            <td>{{ fmtNum(c.record_count) }}</td>
+                                        </tr>
+                                    </tbody>
+                                </table>
+                            </div>
+                        </div>
+                    </div>
+
                     <!-- 原始数据表格 + 批量打标（Phase2） -->
                     <div class="audit-chart-card">
                         <div class="audit-chart-head">
@@ -742,6 +792,14 @@
                                         <span class="badge audit-rule-cat" :class="'cat-' + rule.category">{{ ruleCategoryLabel(rule.category) }}</span>
                                     </label>
                                     <p class="audit-rule-desc">{{ rule.description }}</p>
+                                    <!-- 检测方法切换（window/daily） -->
+                                    <div v-if="rule.methods?.length" class="audit-rule-method">
+                                        <span class="audit-rule-method-label">检测方法:</span>
+                                        <label v-for="m in rule.methods" :key="m" class="audit-rule-method-opt">
+                                            <input type="radio" name="method-{{ rid }}" :checked="rule.method === m" @change="setRuleMethod(rid, m)">
+                                            {{ m === 'window' ? '窗口累计' : '逐日 MAD' }}
+                                        </label>
+                                    </div>
                                 </div>
                             </div>
                             <div class="audit-rule-actions">
