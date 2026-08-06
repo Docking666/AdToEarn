@@ -722,21 +722,48 @@
                         </div>
                     </div>
 
-                    <!-- 异常/风险提示 -->
+                    <!-- 数据信号（合并异常检测 + 统计规则，可勾选启用） -->
                     <div class="audit-chart-card">
                         <div class="audit-chart-head">
-                            <h3>异常与风险提示（{{ auditAnomalies.length }} 项）</h3>
+                            <h3>数据信号（{{ auditSignals.length }} 项 · 按影响金额排序）</h3>
+                            <button class="btn small" @click="showRulePanel = !showRulePanel">
+                                ⚙️ 规则配置{{ showRulePanel ? '（收起）' : '' }}
+                            </button>
                         </div>
-                        <div v-if="!auditAnomalies.length" class="audit-ok-state">✓ 未发现明显异常，账户投放状态健康</div>
-                        <div v-for="(a, i) in auditAnomalies" :key="i" class="audit-anomaly" :class="'sev-' + a.severity">
-                            <div class="audit-anomaly-head">
-                                <span class="badge" :class="severityBadge(a.severity)">{{ severityLabel(a.severity) }}</span>
-                                <strong>{{ a.title }}</strong>
-                                <span v-if="a.account" class="tag-chip">{{ a.account }}</span>
-                                <span v-if="a.date" class="audit-anomaly-date">{{ a.date }}</span>
+
+                        <!-- 规则开关面板 -->
+                        <div v-if="showRulePanel" class="audit-rule-panel">
+                            <div class="audit-rule-hint">选择要启用的信号检测规则（健康评分与数据信号默认启用）</div>
+                            <div class="audit-rule-grid">
+                                <div v-for="(rule, rid) in auditRules" :key="rid" class="audit-rule-item">
+                                    <label class="audit-rule-check">
+                                        <input type="checkbox" :checked="rule.enabled" @change="toggleAuditRule(rid, $event)">
+                                        <strong>{{ rule.name }}</strong>
+                                        <span class="badge audit-rule-cat" :class="'cat-' + rule.category">{{ ruleCategoryLabel(rule.category) }}</span>
+                                    </label>
+                                    <p class="audit-rule-desc">{{ rule.description }}</p>
+                                </div>
                             </div>
-                            <p class="audit-anomaly-desc">{{ a.description }}</p>
-                            <p class="audit-anomaly-sug">💡 {{ a.suggestion }}</p>
+                            <div class="audit-rule-actions">
+                                <button class="btn small" @click="resetAuditRules">重置为默认（全部启用）</button>
+                            </div>
+                        </div>
+
+                        <div v-if="!auditSignals.length" class="audit-ok-state">✓ 未发现明显异常，账户投放状态健康</div>
+                        <div v-for="(s, i) in auditSignals" :key="i" class="audit-anomaly" :class="'sev-' + s.severity + ' cat-' + s.category">
+                            <div class="audit-anomaly-head">
+                                <span class="badge" :class="severityBadge(s.severity)">{{ severityLabel(s.severity) }}</span>
+                                <span class="badge audit-signal-cat" :class="'cat-' + s.category">{{ signalCategoryLabel(s.category) }}</span>
+                                <strong>{{ s.title }}</strong>
+                                <span v-if="s.account" class="tag-chip">{{ s.account }}</span>
+                                <span v-if="s.date" class="audit-anomaly-date">{{ s.date }}</span>
+                                <span v-if="s.impact?.amount" class="audit-impact">影响 ¥{{ fmtMoney(s.impact.amount) }}</span>
+                            </div>
+                            <p class="audit-anomaly-desc">{{ s.description }}</p>
+                            <p class="audit-anomaly-metrics" v-if="s.metrics && Object.keys(s.metrics).length">
+                                <span v-for="(v, k) in s.metrics" :key="k" class="audit-metric-chip">{{ k }}: {{ v }}</span>
+                            </p>
+                            <p class="audit-anomaly-sug">💡 {{ s.suggestion }}</p>
                         </div>
                     </div>
                 </template>

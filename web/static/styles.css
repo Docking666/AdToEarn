@@ -403,4 +403,25 @@ body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC"
 .audit-no-tag { color: var(--text3); font-size: 11px; }
 .audit-table-pager { display: flex; align-items: center; gap: 10px; justify-content: center; margin-top: 10px; }
 .audit-pager-info { font-size: 12px; color: var(--text2); }
+
+/* ===== 数据信号 + 规则开关（Phase3） ===== */
+.audit-rule-panel { background: var(--bg); border: 1px solid var(--border2); border-radius: 10px; padding: 14px; margin-bottom: 12px; }
+.audit-rule-hint { font-size: 12px; color: var(--text2); margin-bottom: 10px; }
+.audit-rule-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 8px; }
+.audit-rule-item { background: var(--bg3); border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px; }
+.audit-rule-check { display: flex; align-items: center; gap: 8px; cursor: pointer; font-size: 13px; }
+.audit-rule-check input { accent-color: var(--acc); }
+.audit-rule-cat { font-size: 10px; padding: 1px 8px; }
+.audit-rule-desc { font-size: 11px; color: var(--text3); margin-top: 6px; line-height: 1.5; }
+.audit-rule-actions { margin-top: 10px; }
+.audit-rule-cat.cat-surge, .audit-signal-cat.cat-surge { background: rgba(251,191,36,.15); color: var(--amber); }
+.audit-rule-cat.cat-decay, .audit-signal-cat.cat-decay { background: rgba(248,113,113,.15); color: var(--red); }
+.audit-rule-cat.cat-inefficiency, .audit-signal-cat.cat-inefficiency { background: rgba(96,165,250,.15); color: var(--blue); }
+.audit-rule-cat.cat-data_quality, .audit-signal-cat.cat-data_quality { background: rgba(139,92,246,.15); color: var(--acc2); }
+.audit-rule-cat.cat-hint, .audit-signal-cat.cat-hint { background: var(--bg4); color: var(--text2); }
+.audit-anomaly.cat-data_quality { border-left-color: var(--acc2); }
+.audit-impact { font-size: 12px; font-weight: 600; color: var(--amber); margin-left: auto; }
+.audit-anomaly-metrics { display: flex; flex-wrap: wrap; gap: 6px; margin: 4px 0; }
+.audit-metric-chip { font-size: 10px; padding: 1px 8px; background: var(--bg4); color: var(--text2); border-radius: 6px; font-family: "SF Mono", Consolas, monospace; }
+@media (max-width: 900px) { .audit-rule-grid { grid-template-columns: 1fr; } }
 @media (max-width: 640px) { .audit-metrics-grid { grid-template-columns: 1fr 1fr; } }

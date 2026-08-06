@@ -192,6 +192,16 @@ class Settings:
         return BASE_DIR / spec.get("audit", "tag_lib_file", default="config/audit_tag_lib.json")
 
     @property
+    def audit_rule_state_file(self) -> Path:
+        """信号规则启用状态持久化文件"""
+        return BASE_DIR / spec.get("audit", "rule_state_file", default="config/audit_rule_state.json")
+
+    @property
+    def audit_signal_rules(self) -> dict:
+        """信号规则定义 (来自 spec)"""
+        return spec.get("audit", "signal_rules", default={})
+
+    @property
     def audit_sample(self) -> dict:
         """示例数据生成参数 (来自 spec)"""
         return spec.get("audit", "sample", default={})

@@ -26,6 +26,7 @@ import csv
 import io
 import json
 import random
+import statistics
 import threading
 from collections import defaultdict
 from datetime import date, datetime, timedelta
@@ -284,11 +285,11 @@ class AuditService:
         }
 
     def summary(self, account: Optional[str] = None, days: Optional[int] = None) -> dict:
-        """投放数据总览：关键指标 + 健康评分 + 账户数"""
+        """投放数据总览：关键指标 + 健康评分 + 信号统计"""
         records = self._filter(account=account, days=days)
         metrics = self._calc(records)
-        anomalies = self.detect_anomalies(records)
-        health = self._health_score(anomalies)
+        signals = self.detect_signals(records)
+        health = self._health_score(signals)
         accounts = len({r.get("mapped", {}).get("account") for r in records})
         metrics.update({
             "account_count": accounts,
@@ -298,9 +299,9 @@ class AuditService:
         return {
             "metrics": metrics,
             "health": health,
-            "anomaly_count": len(anomalies),
+            "anomaly_count": len(signals),
             "anomaly_by_severity": {
-                sev: len([a for a in anomalies if a["severity"] == sev])
+                sev: len([a for a in signals if a["severity"] == sev])
                 for sev in (SEV_CRITICAL, SEV_HIGH, SEV_MEDIUM, SEV_LOW)
             },
         }
@@ -337,121 +338,412 @@ class AuditService:
             result.append(m)
         return result
 
-    # ==================== 异常检测 ====================
-    def detect_anomalies(self, records: Optional[list] = None) -> list:
-        """异常/风险检测（参照 Claude-ads 的 check 思路，输出分级发现项）
-        维度：全局样本检查 + 按账户的时间序列检查（花费突增/CTR骤降/转化中断）
-              + 账户对比检查（CPA 过高 / ROAS 过低）
+    # ==================== 信号规则引擎（Phase3） ====================
+
+    @property
+    def _rule_state_file(self) -> Path:
+        return settings.audit_rule_state_file
+
+    def _load_rule_state(self) -> dict:
+        """加载用户规则启用状态（持久化），与 spec 默认合并"""
+        saved = {}
+        if self._rule_state_file.exists():
+            try:
+                saved = json.loads(self._rule_state_file.read_text(encoding="utf-8"))
+            except (json.JSONDecodeError, OSError):
+                saved = {}
+        rules = settings.audit_signal_rules
+        state = {}
+        for rid, rcfg in rules.items():
+            default = bool(rcfg.get("default_enabled", True))
+            state[rid] = saved.get(rid, default)
+        return state
+
+    def _save_rule_state(self, state: dict):
+        self._rule_state_file.parent.mkdir(parents=True, exist_ok=True)
+        self._rule_state_file.write_text(
+            json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8"
+        )
+
+    def get_rule_states(self) -> dict:
+        """获取全部信号规则定义 + 启用状态"""
+        rules = settings.audit_signal_rules
+        state = self._load_rule_state()
+        result = {}
+        for rid, rcfg in rules.items():
+            result[rid] = {
+                "id": rid,
+                "name": rcfg.get("name", rid),
+                "description": rcfg.get("description", ""),
+                "category": rcfg.get("category", "hint"),
+                "enabled": state.get(rid, True),
+                "default_enabled": bool(rcfg.get("default_enabled", True)),
+            }
+        return result
+
+    def set_rule_state(self, rule_id: str, enabled: bool) -> dict:
+        """设置单个规则启用状态"""
+        rules = settings.audit_signal_rules
+        if rule_id not in rules:
+            raise ValueError(f"未知规则: {rule_id}")
+        state = self._load_rule_state()
+        state[rule_id] = bool(enabled)
+        self._save_rule_state(state)
+        return {"ok": True, "rule_id": rule_id, "enabled": bool(enabled)}
+
+    def reset_rule_states(self) -> dict:
+        """重置全部规则为默认启用"""
+        self._save_rule_state({})
+        return {"ok": True}
+
+    def _is_rule_enabled(self, rule_id: str) -> bool:
+        state = self._load_rule_state()
+        return state.get(rule_id, True)
+
+    # ---- 统计工具（MAD 抗离群） ----
+    @staticmethod
+    def _mad_zscore(values: list, x: float) -> float:
+        """计算 x 相对 values 的稳健 z-score（中位数 + MAD）
+        z = (x - median) / (1.4826 * MAD)
+        """
+        if not values:
+            return 0.0
+        median = statistics.median(values)
+        if len(values) >= 2:
+            deviations = [abs(v - median) for v in values]
+            mad = statistics.median(deviations)
+        else:
+            mad = 0.0
+        if mad == 0:
+            # MAD 为 0（值都相等）时，用均值 + 小 epsilon 兜底
+            mean = sum(values) / len(values)
+            if mean == 0:
+                return 0.0
+            scale = max(mean * 0.05, 1e-9)
+        else:
+            scale = 1.4826 * mad
+        return (x - median) / scale
+
+    def _mk_signal(self, severity, category, title, description, suggestion="",
+                   account=None, date=None, impact_amount=0.0, impact_desc="",
+                   metrics=None) -> dict:
+        """构造统一 schema 的信号"""
+        return {
+            "severity": severity,
+            "category": category,
+            "title": title,
+            "description": description,
+            "suggestion": suggestion,
+            "account": account,
+            "date": date,
+            "impact": {"amount": round(impact_amount, 2), "desc": impact_desc},
+            "metrics": metrics or {},
+        }
+
+    def detect_signals(self, records: Optional[list] = None) -> list:
+        """信号引擎主入口：合并 6 类规则信号（参照 Claude-ads + marqops 业界实践）
+        统一 schema：severity / category / impact / metrics
+        规则启用状态可配置（默认全部启用，健康评分默认启用）
         """
         records = self._filter() if records is None else records
         if not records:
-            return [{
-                "severity": SEV_LOW,
-                "type": "no_data",
-                "title": "暂无投放数据",
-                "description": "上传 CSV/JSON 数据或生成示例数据后开始审计",
-                "suggestion": "前往「数据导入」上传投放数据",
-            }]
-        anomalies = []
-        anomaly_cfg = settings.audit_anomaly
+            return [self._mk_signal(
+                SEV_LOW, "hint", "暂无投放数据",
+                "上传 CSV/JSON 数据或生成示例数据后开始审计",
+                suggestion="前往「数据导入」上传投放数据",
+                impact_desc="无数据", metrics={"record_count": 0},
+            )]
+        signals = []
+        rules = settings.audit_signal_rules
+        state = self._load_rule_state()
+
+        # 全局聚合
         total = self._calc(records)
         dates_all = sorted({r.get("mapped", {}).get("date", "") for r in records})
 
-        # ---- 全局样本检查 ----
-        if total["impressions"] < int(anomaly_cfg.get("min_impressions", 10000)):
-            anomalies.append(self._mk(
-                SEV_LOW, "low_impressions", "曝光量不足",
-                f"总曝光 {total['impressions']:,}，样本可能不足以支撑可靠结论",
-                "建议补充更长周期或更多账户的数据",
-            ))
-        if len(dates_all) < int(anomaly_cfg.get("min_sample_days", 14)):
-            anomalies.append(self._mk(
-                SEV_LOW, "small_sample", "数据样本不足",
-                f"仅有 {len(dates_all)} 天数据，趋势分析参考价值有限",
-                "建议补充至少 14 天的投放数据",
-            ))
+        # ---- 提示类：样本不足 / 曝光不足 ----
+        if state.get("small_sample", True):
+            cfg = rules.get("small_sample", {})
+            min_days = int(cfg.get("min_sample_days", 14))
+            if len(dates_all) < min_days:
+                signals.append(self._mk_signal(
+                    SEV_LOW, "hint", "数据样本不足",
+                    f"仅有 {len(dates_all)} 天数据，趋势分析参考价值有限",
+                    "建议补充至少 14 天的投放数据",
+                    impact_desc="统计可靠性不足",
+                    metrics={"days": len(dates_all), "min_days": min_days},
+                ))
+        if state.get("low_impressions", True):
+            cfg = rules.get("low_impressions", {})
+            min_imp = int(cfg.get("min_impressions", 10000))
+            if total["impressions"] < min_imp:
+                signals.append(self._mk_signal(
+                    SEV_LOW, "hint", "曝光量不足",
+                    f"总曝光 {total['impressions']:,}，样本可能不足以支撑可靠结论",
+                    "建议补充更长周期或更多账户的数据",
+                    impact_desc="样本量偏小",
+                    metrics={"impressions": total["impressions"], "min": min_imp},
+                ))
 
-        # ---- 按账户时间序列检查 ----
-        surge_ratio = float(anomaly_cfg.get("spend_surge_ratio", 3.0))
-        ctr_drop_ratio = float(anomaly_cfg.get("ctr_drop_ratio", 0.5))
-        no_conv_days = int(anomaly_cfg.get("no_conversion_days", 3))
-
+        # ---- 按账户时间序列（花费突增 / CTR 骤降 / 连续无转化） ----
         for acc, acc_recs in self._group_by_account(records).items():
             dates = sorted({r.get("mapped", {}).get("date", "") for r in acc_recs})
-            # 账户内每日聚合（跨账户隔离，避免被全局平均稀释）
             day_map = {d: self._calc([r for r in acc_recs if r.get("mapped", {}).get("date") == d]) for d in dates}
-            prev_window = []  # 前 7 日指标列表
 
-            for i, d in enumerate(dates):
-                cur = day_map[d]
-                if i >= 7:
-                    prev = self._calc(prev_window)  # prev 为前 7 日累计，需换算日均值
-                    prev_daily_spend = prev["spend"] / 7.0
-                    prev_ctr = prev["ctr"]
-                    # 花费突增（当日 vs 前 7 日日均）
-                    if prev_daily_spend > 0 and cur["spend"] >= prev_daily_spend * surge_ratio:
-                        anomalies.append(self._mk(
-                            SEV_HIGH if cur["spend"] >= prev_daily_spend * surge_ratio * 1.5 else SEV_MEDIUM,
-                            "spend_surge", f"花费突增 {cur['spend'] / prev_daily_spend:.1f} 倍",
-                            f"「{acc}」{d} 花费 ¥{cur['spend']:,.2f}，为前 7 日均值（¥{prev_daily_spend:,.2f}/日）的 {cur['spend'] / prev_daily_spend:.1f} 倍",
-                            "检查是否误配预算/出价、流量质量下降或异常点击",
-                            date=d, account=acc,
-                        ))
-                    # CTR 骤降（需有足够曝光才可信）
-                    if (prev_ctr > 0 and cur["ctr"] > 0
-                            and cur["impressions"] >= int(anomaly_cfg.get("min_impressions", 10000))
-                            and cur["ctr"] < prev_ctr * ctr_drop_ratio):
-                        anomalies.append(self._mk(
-                            SEV_MEDIUM, "ctr_drop", "点击率骤降",
-                            f"「{acc}」{d} 点击率 {cur['ctr']}%，低于前 7 日均值（{prev_ctr}%）的 {int(ctr_drop_ratio * 100)}%",
-                            "检查素材疲劳、受众定向变化或展示位置质量",
-                            date=d, account=acc,
-                        ))
-                    prev_window.pop(0)
-                prev_window.append(cur)
+            # 花费突增（MAD + 同周几季节性基线）
+            if state.get("spend_surge", True):
+                signals += self._detect_spend_surge(acc, dates, day_map, rules.get("spend_surge", {}))
 
-            # 连续花费无转化
-            streak = 0
-            for d in dates:
-                dm = day_map[d]
-                if dm["spend"] > 0 and dm["conversions"] == 0:
-                    streak += 1
-                    if streak == no_conv_days:
-                        anomalies.append(self._mk(
-                            SEV_HIGH, "no_conversion", "连续花费无转化",
-                            f"账户「{acc}」连续 {streak} 天有花费但转化量为 0",
-                            "暂停该账户/系列并排查落地页、受众与转化追踪",
-                            date=d, account=acc,
-                        ))
-                else:
-                    streak = 0
+            # CTR 骤降（MAD + 同周几 + 曝光下限）
+            if state.get("ctr_drop", True):
+                signals += self._detect_ctr_drop(acc, dates, day_map, rules.get("ctr_drop", {}))
 
-        # ---- 账户对比检查：CPA 过高 / ROAS 过低 ----
-        cpa_surge = float(anomaly_cfg.get("cpa_surge_ratio", 2.0))
-        roas_warn = float(anomaly_cfg.get("roas_warn_below", 1.0))
-        total_cpa = total["cpa"]
+            # 连续花费无转化（数据质量分流：追踪中断 vs 业务下滑）
+            if state.get("no_conversion", True):
+                signals += self._detect_no_conversion(acc, dates, day_map, rules.get("no_conversion", {}))
+
+        # ---- 账户对比（ROAS 过低 / CPA 过高） ----
+        if state.get("roas_low", True):
+            signals += self._detect_roas_low(records, total, rules.get("roas_low", {}))
+        if state.get("cpa_high", True):
+            signals += self._detect_cpa_high(records, total, rules.get("cpa_high", {}))
+
+        # ---- 排序：severity + impact 金额降序 ----
+        sev_order = {SEV_CRITICAL: 0, SEV_HIGH: 1, SEV_MEDIUM: 2, SEV_LOW: 3}
+        signals.sort(key=lambda s: (sev_order.get(s["severity"], 9), -s["impact"]["amount"]))
+        return signals
+
+    # ---- 各规则检测实现 ----
+    def _baseline_values(self, dates: list, day_map: dict, field: str,
+                         weekday_window: int = 0) -> list:
+        """构建基线值列表：weekday_window>0 时取同周几历史，否则取连续窗口历史"""
+        # 返回与 dates 等长的「截至当日的历史基线窗口」较复杂；简化：
+        # 调用方传过来的是全序列，这里直接返回全量历史值（不含最后一天）
+        values = [day_map[d][field] for d in dates]
+        return values
+
+    def _detect_spend_surge(self, acc, dates, day_map, cfg) -> list:
+        """花费突增：窗口累计法（业界实践）
+        最近 N 天（duration_days）累计花费 vs 历史日均中位数 × N：
+          - 累计超额 = 窗口累计 - 历史日均 × 窗口
+          - 触发：超额比例 ≥ min_change_pct 且 超额金额 ≥ min_impact
+        非重叠窗口去重：同一账户检测到一次后跳过 window 天，避免滑动窗口重复报警。
+        """
+        signals = []
+        min_pct = float(cfg.get("min_change_pct", 50.0))
+        min_impact = float(cfg.get("min_impact_amount", 2000.0))
+        window = max(int(cfg.get("duration_days", 2)), 1)
+        last_trigger_idx = -window  # 上次触发位置（非重叠窗口）
+        for i in range(len(dates)):
+            if i < window:
+                continue
+            # 跳过上次触发附近的窗口（非重叠去重）
+            if i - last_trigger_idx < window:
+                continue
+            # 最近 window 天窗口（含当日）
+            cur_total = sum(day_map[x]["spend"] for x in dates[i - window + 1:i + 1])
+            # 窗口之前的历史日均（中位数，抗离群）
+            hist = [day_map[x]["spend"] for x in dates[:i - window + 1]]
+            if not hist:
+                continue
+            median_daily = statistics.median(hist)
+            if median_daily <= 0:
+                continue
+            expected = median_daily * window
+            excess = cur_total - expected
+            pct_change = excess / expected * 100
+            if pct_change < min_pct or excess < min_impact:
+                continue
+            ratio = cur_total / expected
+            severity = SEV_HIGH if ratio >= 2.0 else SEV_MEDIUM
+            signals.append(self._mk_signal(
+                severity, "surge", f"花费突增（{ratio:.1f} 倍）",
+                f"「{acc}」最近 {window} 天（{dates[i - window + 1]}~{dates[i]}）花费 ¥{cur_total:,.2f}，"
+                f"高于历史日均 ¥{median_daily:,.2f} × {window} 天预期的 {pct_change:.0f}%",
+                "检查是否误配预算/出价、流量质量下降或异常点击",
+                account=acc, date=dates[i], impact_amount=excess,
+                impact_desc="预估超额花费",
+                metrics={"ratio": round(ratio, 2), "magnitude": f"{pct_change:.0f}%",
+                         "window_days": window, "excess": round(excess, 2)},
+            ))
+            last_trigger_idx = i
+        return signals
+
+    def _detect_ctr_drop(self, acc, dates, day_map, cfg) -> list:
+        """CTR 骤降：窗口累计法（业界实践）
+        最近 N 天窗口 CTR（累计点击/累计曝光）vs 历史窗口 CTR 中位数：
+          触发条件：下降比例 ≥ min_change_pct 且 曝光足够 且 预估损失 ≥ min_impact
+        非重叠窗口去重。
+        """
+        signals = []
+        min_pct = float(cfg.get("min_change_pct", 40.0))
+        min_imp = float(cfg.get("min_impressions", 10000))
+        min_impact = float(cfg.get("min_impact_amount", 1000.0))
+        window = max(int(cfg.get("duration_days", 2)), 1)
+        last_trigger_idx = -window
+        for i in range(len(dates)):
+            if i < window:
+                continue
+            if i - last_trigger_idx < window:
+                continue
+            # 窗口累计点击/曝光 → 窗口 CTR
+            win_dates = dates[i - window + 1:i + 1]
+            win_clicks = sum(day_map[x]["clicks"] for x in win_dates)
+            win_imp = sum(day_map[x]["impressions"] for x in win_dates)
+            win_spend = sum(day_map[x]["spend"] for x in win_dates)
+            if win_imp < min_imp:
+                continue
+            win_ctr = win_clicks / win_imp * 100 if win_imp > 0 else 0
+            if win_ctr <= 0:
+                continue
+            # 历史窗口 CTR（每个前 window 天窗口计算一次，取中位数）
+            hist_windows = []
+            for j in range(window, i - window + 1):
+                h_dates = dates[j - window + 1:j + 1]
+                h_clicks = sum(day_map[x]["clicks"] for x in h_dates)
+                h_imp = sum(day_map[x]["impressions"] for x in h_dates)
+                if h_imp >= min_imp:
+                    hist_windows.append(h_clicks / h_imp * 100)
+            if not hist_windows:
+                continue
+            median_ctr = statistics.median(hist_windows)
+            if median_ctr <= 0:
+                continue
+            pct_drop = (median_ctr - win_ctr) / median_ctr * 100
+            if pct_drop < min_pct:
+                continue
+            # 预估损失 = 曝光不变时损失的点击 × 平均 CPC（曝光加权，避免花费随点击下降而低估）
+            # 损失点击 = win_imp × (median_ctr - win_ctr) / 100
+            lost_clicks = win_imp * (median_ctr - win_ctr) / 100
+            avg_cpc = win_spend / win_clicks if win_clicks > 0 else 0
+            impact = lost_clicks * avg_cpc
+            if impact < min_impact:
+                continue
+            severity = SEV_HIGH if pct_drop >= min_pct * 2 else SEV_MEDIUM
+            signals.append(self._mk_signal(
+                severity, "decay", f"点击率骤降（{pct_drop:.0f}%）",
+                f"「{acc}」最近 {window} 天（{win_dates[0]}~{win_dates[-1]}）窗口 CTR {win_ctr:.2f}%，"
+                f"低于历史窗口 CTR 中位 {median_ctr:.2f}% 达 {pct_drop:.0f}%",
+                "检查素材疲劳、受众定向变化或展示位置质量",
+                account=acc, date=win_dates[-1], impact_amount=impact,
+                impact_desc="预估因 CTR 下降损失",
+                metrics={"magnitude": f"{pct_drop:.0f}%", "win_ctr": round(win_ctr, 2),
+                         "median_ctr": round(median_ctr, 2), "window_days": window},
+            ))
+            last_trigger_idx = i
+        return signals
+
+    def _detect_no_conversion(self, acc, dates, day_map, cfg) -> list:
+        """连续花费无转化：数据质量分流（追踪中断 vs 业务下滑）"""
+        signals = []
+        no_conv_days = int(cfg.get("no_conversion_days", 3))
+        min_impact = float(cfg.get("min_impact_amount", 500.0))
+        imp_ratio = float(cfg.get("tracking_break_imp_ratio", 0.7))
+        streak = 0
+        for d in dates:
+            dm = day_map[d]
+            if dm["spend"] > 0 and dm["conversions"] == 0:
+                streak += 1
+                if streak == no_conv_days:
+                    impact = dm["spend"]
+                    # 分流：检查曝光是否相对历史正常（正常 → 追踪中断；下降 → 业务下滑）
+                    imp_now = dm["impressions"]
+                    idx = dates.index(d)
+                    hist_imp = [day_map[x]["impressions"] for x in dates[:idx]] if idx > 0 else []
+                    if hist_imp:
+                        median_imp = statistics.median(hist_imp)
+                        is_tracking_break = (median_imp > 0 and imp_now >= median_imp * imp_ratio)
+                    else:
+                        is_tracking_break = True  # 无历史则归为数据质量
+                    if impact < min_impact and not is_tracking_break:
+                        streak = 0
+                        continue
+                    if is_tracking_break:
+                        signals.append(self._mk_signal(
+                            SEV_HIGH, "data_quality", "连续花费无转化（疑似追踪中断）",
+                            f"「{acc}」连续 {streak} 天有花费但转化量为 0，曝光 {imp_now:,} 相对历史正常，可能为转化追踪中断而非业务下滑",
+                            "检查 Pixel/转化 API/落地页埋点是否正常",
+                            account=acc, date=d, impact_amount=impact,
+                            impact_desc="连续无转化期间的累计花费",
+                            metrics={"duration_days": streak, "impressions": imp_now,
+                                     "tracking_break": True},
+                        ))
+                    else:
+                        signals.append(self._mk_signal(
+                            SEV_HIGH, "decay", "连续花费无转化（业务下滑）",
+                            f"「{acc}」连续 {streak} 天有花费但转化量为 0，曝光同步下降",
+                            "暂停该账户/系列并排查受众、素材与落地页",
+                            account=acc, date=d, impact_amount=impact,
+                            impact_desc="连续无转化期间的累计花费",
+                            metrics={"duration_days": streak, "impressions": imp_now,
+                                     "tracking_break": False},
+                        ))
+            else:
+                streak = 0
+        return signals
+
+    def _detect_roas_low(self, records, total, cfg) -> list:
+        """ROAS 过低：账户维度，持续低于警戒线"""
+        signals = []
+        roas_warn = float(cfg.get("roas_warn_below", 1.0))
+        min_impact = float(cfg.get("min_impact_amount", 1000.0))
         for acc, acc_recs in self._group_by_account(records).items():
             m = self._calc(acc_recs)
-            if total_cpa > 0 and m["cpa"] > total_cpa * cpa_surge and m["conversions"] > 0:
-                anomalies.append(self._mk(
-                    SEV_MEDIUM, "cpa_high", "获客成本过高",
-                    f"账户「{acc}」CPA ¥{m['cpa']:,.2f}，为整体均值（¥{total_cpa:,.2f}）的 {m['cpa'] / total_cpa:.1f} 倍",
-                    "拆分优化该账户的关键词/素材/出价策略",
-                    account=acc,
-                ))
             if m["spend"] > 0 and m["roas"] < roas_warn:
-                anomalies.append(self._mk(
-                    SEV_HIGH if m["spend"] > 1000 else SEV_MEDIUM,
-                    "roas_low", "投产比低于警戒线",
-                    f"账户「{acc}」ROAS {m['roas']} < {roas_warn}，花费 ¥{m['spend']:,.2f} 未产生足够转化价值",
+                impact = m["spend"] * (roas_warn - m["roas"])  # 与警戒线差距的预估浪费
+                if impact < min_impact:
+                    continue
+                signals.append(self._mk_signal(
+                    SEV_HIGH if m["spend"] > 5000 else SEV_MEDIUM,
+                    "inefficiency", "投产比低于警戒线",
+                    f"「{acc}」ROAS {m['roas']} < {roas_warn}，花费 ¥{m['spend']:,.2f} 未产生足够转化价值",
                     "评估是否暂停该账户或大幅调整预算分配",
-                    account=acc,
+                    account=acc, impact_amount=impact,
+                    impact_desc="相对警戒线的预估投入损失",
+                    metrics={"roas": m["roas"], "spend": m["spend"], "warn_below": roas_warn},
                 ))
+        return signals
 
-        # 排序：critical > high > medium > low
-        order = {SEV_CRITICAL: 0, SEV_HIGH: 1, SEV_MEDIUM: 2, SEV_LOW: 3}
-        anomalies.sort(key=lambda a: (order.get(a["severity"], 9), a["title"]))
-        return anomalies
+    def _detect_cpa_high(self, records, total, cfg) -> list:
+        """CPA 过高：账户 CPA 显著高于整体均值"""
+        signals = []
+        ratio = float(cfg.get("cpa_surge_ratio", 2.0))
+        min_impact = float(cfg.get("min_impact_amount", 0.0))
+        total_cpa = total["cpa"]
+        if total_cpa <= 0:
+            return signals
+        for acc, acc_recs in self._group_by_account(records).items():
+            m = self._calc(acc_recs)
+            if m["cpa"] > total_cpa * ratio and m["conversions"] > 0:
+                impact = (m["cpa"] - total_cpa) * m["conversions"]  # 超额成本 × 转化数
+                if impact < min_impact:
+                    continue
+                signals.append(self._mk_signal(
+                    SEV_MEDIUM, "inefficiency", "获客成本过高",
+                    f"「{acc}」CPA ¥{m['cpa']:,.2f}，为整体均值（¥{total_cpa:,.2f}）的 {m['cpa'] / total_cpa:.1f} 倍",
+                    "拆分优化该账户的关键词/素材/出价策略",
+                    account=acc, impact_amount=impact,
+                    impact_desc="相对整体均值的超额获客成本",
+                    metrics={"cpa": m["cpa"], "avg_cpa": total_cpa, "ratio": round(m["cpa"] / total_cpa, 1)},
+                ))
+        return signals
+
+    # ---- 兼容旧 API ----
+    def detect_anomalies(self, records: Optional[list] = None) -> list:
+        """兼容旧接口：调用新信号引擎，映射旧字段名（type/suggestion）"""
+        signals = self.detect_signals(records)
+        result = []
+        for s in signals:
+            result.append({
+                "severity": s["severity"],
+                "type": s["category"],
+                "title": s["title"],
+                "description": s["description"],
+                "suggestion": s["suggestion"],
+                "date": s["date"],
+                "account": s["account"],
+            })
+        return result
 
     def _health_score(self, anomalies: list) -> dict:
         """健康评分（参照 Claude-ads：基础 100，按严重度扣分，A/B/C/D 分级）"""

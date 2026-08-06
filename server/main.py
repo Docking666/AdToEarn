@@ -152,6 +152,12 @@ class AuditTagGroupRequest(BaseModel):
     description: str = ""
 
 
+class AuditRuleStateRequest(BaseModel):
+    """信号规则开关请求"""
+    rule_id: str = ""
+    enabled: bool = True
+
+
 # ==================== 页面路由 ====================
 
 @app.get("/", response_class=HTMLResponse)
@@ -508,9 +514,39 @@ async def audit_accounts(days: Optional[int] = None):
 
 @app.get("/api/audit/anomalies")
 async def audit_anomalies(account: Optional[str] = None):
-    """异常 / 风险发现项（分级）"""
+    """异常 / 风险发现项（分级）—— 兼容旧接口"""
     records = audit_service._filter(account=account) if account else None
     return {"anomalies": audit_service.detect_anomalies(records)}
+
+
+@app.get("/api/audit/signals")
+async def audit_signals(account: Optional[str] = None):
+    """数据信号（统一 schema：severity/category/impact/metrics，按影响金额排序）"""
+    records = audit_service._filter(account=account) if account else None
+    return {"signals": audit_service.detect_signals(records)}
+
+
+@app.get("/api/audit/rules")
+async def audit_rules():
+    """获取全部信号规则定义 + 启用状态"""
+    return {"rules": audit_service.get_rule_states()}
+
+
+@app.post("/api/audit/rules")
+async def audit_rules_set(req: AuditRuleStateRequest):
+    """设置单个信号规则启用状态（勾选启用/禁用）"""
+    if not req.rule_id:
+        raise HTTPException(status_code=400, detail="rule_id 不能为空")
+    try:
+        return audit_service.set_rule_state(req.rule_id, req.enabled)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.post("/api/audit/rules/reset")
+async def audit_rules_reset():
+    """重置全部信号规则为默认启用"""
+    return audit_service.reset_rule_states()
 
 
 @app.get("/api/audit/records")

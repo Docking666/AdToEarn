@@ -289,6 +289,9 @@ createApp({
     const auditTrend = ref([]);
     const auditAccounts = ref([]);
     const auditAnomalies = ref([]);
+    const auditSignals = ref([]);          // 数据信号（统一 schema）
+    const auditRules = ref({});            // 信号规则 + 启用状态
+    const showRulePanel = ref(false);      // 规则配置面板开关
     const auditLoading = reactive({ sample: false, clear: false, import: false, detect: false });
     const auditFilter = reactive({ account: "", days: 0 });
     const auditChartType = ref("volume");
@@ -361,18 +364,47 @@ createApp({
       if (auditFilter.days) params.set("days", auditFilter.days);
       const qs = params.toString() ? "?" + params : "";
       try {
-        const [summary, trend, accounts, anomalies] = await Promise.all([
+        const [summary, trend, accounts, signals, rules] = await Promise.all([
           fetch(`/api/audit/summary${qs}`).then(r => r.json()),
           fetch(`/api/audit/trend${qs}`).then(r => r.json()),
           fetch(`/api/audit/accounts${qs}`).then(r => r.json()),
-          fetch(`/api/audit/anomalies${qs}`).then(r => r.json()),
+          fetch(`/api/audit/signals${qs}`).then(r => r.json()),
+          fetch(`/api/audit/rules`).then(r => r.json()),
         ]);
         auditSummary.value = summary;
         auditTrend.value = trend.trend || [];
         auditAccounts.value = accounts.accounts || [];
-        auditAnomalies.value = anomalies.anomalies || [];
+        auditSignals.value = signals.signals || [];
+        auditRules.value = rules.rules || {};
         renderAuditCharts();
       } catch (e) { console.error(e); }
+    }
+
+    // ===== 信号规则开关（Phase3） =====
+    const signalCategoryLabels = {
+      surge: "🔥 突增", decay: "📉 衰减", inefficiency: "⚠️ 低效",
+      data_quality: "🛠 数据质量", hint: "💡 提示",
+    };
+    const signalCategoryLabel = (c) => signalCategoryLabels[c] || c;
+    const ruleCategoryLabel = (c) => ({ surge: "突增", decay: "衰减", inefficiency: "低效", data_quality: "数据质量", hint: "提示" }[c] || c);
+
+    async function toggleAuditRule(rid, e) {
+      const enabled = e.target.checked;
+      try {
+        await fetch("/api/audit/rules", {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ rule_id: rid, enabled }),
+        });
+        if (auditRules.value[rid]) auditRules.value[rid].enabled = enabled;
+        await loadAuditAll();  // 重新计算信号
+      } catch (err) { console.error(err); }
+    }
+
+    async function resetAuditRules() {
+      try {
+        await fetch("/api/audit/rules/reset", { method: "POST" });
+        await loadAuditAll();
+      } catch (err) { console.error(err); }
     }
 
     function switchAuditChart(type) {
@@ -622,6 +654,7 @@ createApp({
         auditTrend.value = [];
         auditAccounts.value = [];
         auditAnomalies.value = [];
+        auditSignals.value = [];
         await loadAuditMeta();
       } catch (e) {}
       finally { auditLoading.clear = false; }
@@ -922,9 +955,12 @@ createApp({
       wfInput, wfDragOver, wfFile, wfRunning, wfResult, wfStep, wfSteps, wfStepState, handleWfDrop, runWorkflow,
       // 广告账户审计
       auditCsvInput, auditMeta, auditSummary, auditTrend, auditAccounts, auditAnomalies,
+      auditSignals, auditRules, showRulePanel,
       auditLoading, auditFilter, auditChartType, auditTrendChart, auditAccountChart,
       auditMetricCards, severityLabel, severityBadge, fmtNum, fmtMoney,
       loadAuditAll, switchAuditChart, onAuditFileSelect, generateAuditSample, clearAuditData,
+      // Phase3: 信号规则开关
+      signalCategoryLabel, ruleCategoryLabel, toggleAuditRule, resetAuditRules,
       // Phase1: 拖拽 + 字段映射
       auditDragOver, auditUploadFile, auditFieldDetect, auditFieldMapEdit, auditStandardFields,
       onAuditDrop, handleAuditFile, auditMapLayerLabel, onAuditFieldMapChange, confirmAuditImport,

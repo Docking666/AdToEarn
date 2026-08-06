@@ -439,6 +439,100 @@ audit:
   # 用户自定义标签持久化文件（运行时生成，不入库）
   tag_lib_file: "config/audit_tag_lib.json"
 
+  # ------------------------------------------------------------
+  # 信号规则引擎（Phase3 升级）
+  # 数据信号体系（合并原「异常检测」+ 新增统计规则），每条规则可勾选启用/禁用，
+  # 默认全部启用。启用状态持久化到 rule_state_file（用户关闭后重启仍保留）。
+  # 检测方法（参照 marqops / improvado 业界实践，纯 Python 零依赖）：
+  #   1) 中位数 + MAD 抗离群基线（替代均值 ± 标准差）
+  #   2) 三层严重度：magnitude（%变化）+ statistical rarity（z-score）+ duration（持续天数）
+  #   3) 同周几季节性基线（对比前 N 个同周几，而非连续 7 天）
+  #   4) 业务影响估算（impact.amount，按预估金额排序）
+  #   5) 数据质量信号与业务信号分流（转化归零区分「追踪中断」与「业务下滑」）
+  # 信号统一 schema：
+  #   { severity, category, title, description, impact:{amount,desc},
+  #     metrics:{z_score,magnitude,duration_days}, account, date, suggestion }
+  # ------------------------------------------------------------
+  # 信号规则启用状态持久化文件
+  rule_state_file: "config/audit_rule_state.json"
+  # 信号规则定义（id 稳定，前端勾选用）
+  signal_rules:
+    # ---- 突增类 ----
+    spend_surge:
+      name: "花费突增"
+      description: "某账户/组合当日花费显著高于自身历史水平（MAD 抗离群基线）"
+      category: "surge"          # surge | decay | inefficiency | data_quality | hint
+      default_enabled: true
+      # MAD 基线窗口（天）
+      baseline_window: 14
+      # 同周几窗口（天，0=用连续窗口）
+      weekday_window: 4
+      # 三层严重度阈值
+      z_threshold: 3.0           # 中高严重度（保留，备用）
+      z_high_threshold: 5.0      # 高严重度（保留，备用）
+      min_change_pct: 100.0      # 最小变化幅度（%）：窗口累计需翻倍才算突增（过滤随机波动）
+      min_impact_amount: 5000.0  # 业务影响下限（元），低于不触发
+      duration_days: 2           # 持续天数（窗口累计天数，防单日噪声）
+      # 业务影响估算：花费突增的超额花费
+      impact_field: "spend"
+    # ---- 衰减类 ----
+    ctr_drop:
+      name: "点击率骤降"
+      description: "曝光足量时 CTR 显著低于自身历史水平（素材疲劳 / 展示质量下降）"
+      category: "decay"
+      default_enabled: true
+      baseline_window: 14
+      weekday_window: 4
+      z_threshold: 3.0
+      z_high_threshold: 5.0
+      min_change_pct: 50.0       # 最小下降幅度（%），过滤随机波动
+      min_impact_amount: 2000.0  # 业务影响下限（元）
+      duration_days: 2
+      impact_field: "spend"
+      # 专用：曝光量下限（低于视为样本不足不检测）
+      min_impressions: 10000
+    # ---- 低效类 ----
+    roas_low:
+      name: "投产比低于警戒线"
+      description: "某账户/组合 ROAS 持续低于警戒线（花费未产生足够转化价值）"
+      category: "inefficiency"
+      default_enabled: true
+      roas_warn_below: 1.0
+      duration_days: 3           # 持续 3 天才触发，避免单日波动
+      min_impact_amount: 1000.0
+    cpa_high:
+      name: "获客成本过高"
+      description: "某账户/组合 CPA 显著高于整体均值（预算浪费信号）"
+      category: "inefficiency"
+      default_enabled: true
+      cpa_surge_ratio: 2.0
+      min_impact_amount: 0.0
+    # ---- 数据质量类 ----
+    no_conversion:
+      name: "连续花费无转化"
+      description: "有花费但转化量为 0，自动分流：若曝光正常 → 数据质量问题（追踪中断）；否则 → 业务下滑"
+      category: "data_quality"
+      default_enabled: true
+      no_conversion_days: 3
+      min_impact_amount: 500.0
+      # 分流阈值：当日曝光相对自身基线未下降超过该比例 → 判定为追踪中断
+      tracking_break_imp_ratio: 0.7
+    # ---- 提示类 ----
+    small_sample:
+      name: "数据样本不足"
+      description: "数据覆盖天数少于阈值，统计结论可靠性有限"
+      category: "hint"
+      default_enabled: true
+      min_sample_days: 14
+      min_impact_amount: 0.0
+    low_impressions:
+      name: "曝光量不足"
+      description: "总曝光低于阈值，样本可能不足以支撑可靠结论"
+      category: "hint"
+      default_enabled: true
+      min_impressions: 10000
+      min_impact_amount: 0.0
+
 # ------------------------------------------------------------
 # LLM 大模型提供商模板 (经 LiteLLM 网关统一调用)
 # 密钥与自定义端点通过 WebUI 写入 config/api_config.json
