@@ -22,7 +22,13 @@ createApp({
 
     // ===== 健康状态 =====
     const health = reactive({ ai_configured: false });
-    fetch("/health").then(r => r.json()).then(d => { health.ai_configured = d.ai_configured; }).catch(() => {});
+    async function loadHealth() {
+      try {
+        const d = await (await fetch("/health")).json();
+        health.ai_configured = !!(d.config_status && d.config_status.llm === "configured") || !!d.ai_configured;
+      } catch (e) { /* keep old */ }
+    }
+    loadHealth();
 
     // ===== 工作台统计 =====
     const stats = reactive({ keywords: 0, analyzed: 0, generated: 0 });
@@ -156,6 +162,7 @@ createApp({
         const d = await res.json();
         if (d.ok) {
           await loadApiConfigs();
+          await loadHealth();  // 刷新侧边栏 AI 状态与采集页 not_configured 判断
           configForm.api_key = "";
           editingProvider.value = null;
           testResult.value = null;
@@ -169,6 +176,7 @@ createApp({
       if (!confirm(`确定删除「${name}」的配置？`)) return;
       await fetch(`/api/apiconfig/${configDomain.value}/${pid}`, { method: "DELETE" });
       await loadApiConfigs();
+      await loadHealth();
       if (editingProvider.value === pid) { editingProvider.value = null; configForm.provider = ""; }
     }
 

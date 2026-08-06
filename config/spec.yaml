@@ -583,6 +583,8 @@ llm:
       default_model: "gpt-4o"
       vision_default_model: "gpt-4o"
       supports_vision: true
+      supports_web_search: true
+      supports_web_search: true
     anthropic:
       name: "Anthropic (Claude)"
       litellm_prefix: "anthropic"
@@ -590,6 +592,8 @@ llm:
       default_model: "claude-sonnet-4-20250514"
       vision_default_model: "claude-sonnet-4-20250514"
       supports_vision: true
+      supports_web_search: true
+      supports_web_search: true
     google:
       name: "Google Gemini"
       litellm_prefix: "gemini"
@@ -597,6 +601,8 @@ llm:
       default_model: "gemini-1.5-pro"
       vision_default_model: "gemini-1.5-pro"
       supports_vision: true
+      supports_web_search: true
+      supports_web_search: true
     azure:
       name: "Azure OpenAI"
       litellm_prefix: "azure"
@@ -604,6 +610,8 @@ llm:
       default_model: "gpt-4o"
       vision_default_model: "gpt-4o"
       supports_vision: true
+      supports_web_search: true
+      supports_web_search: true
     deepseek:
       name: "DeepSeek"
       litellm_prefix: "deepseek"

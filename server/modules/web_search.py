@@ -65,13 +65,24 @@ class WebSearchService:
         return api_config_manager.get_config(DOMAIN_LLM, provider)
 
     def _resolve_provider(self) -> tuple:
-        """解析可用 provider：首选配置 > 备选（另一个）"""
+        """解析可用 provider：仅挑选 spec 中 supports_web_search=true 且已启用+有 key 的配置
+        优先 spec 配置的 preferred provider；按 cfg 时间顺序 fallback
+        返回 (provider_id, cfg)；任一参数缺失返回 (None, None)
+        """
+        cfgs = api_config_manager.get_enabled_llm_configs()  # [{id, ...}, ...]
+        if not cfgs:
+            return None, None
+        templates = settings.llm_providers or {}
+        # 仅过滤 spec 中 supports_web_search=true 的
+        web_cfgs = [c for c in cfgs if templates.get(c["id"], {}).get("supports_web_search")]
+        if not web_cfgs:
+            return None, None
         preferred = self._cfg().get("provider", "openai")
-        for pid in (preferred, "anthropic" if preferred == "openai" else "openai"):
-            cfg = self._get_llm_config(pid)
-            if cfg and cfg.get("api_key"):
-                return pid, cfg
-        return None, None
+        for c in web_cfgs:
+            if c["id"] == preferred:
+                return c["id"], c
+        # 没有匹配 preferred 时取第一个
+        return web_cfgs[0]["id"], web_cfgs[0]
 
     # ==================== 提示词 ====================
     def _build_prompt(self, keyword: str, days: Optional[int], domains: list, max_results: int) -> str:
@@ -236,6 +247,28 @@ class WebSearchService:
         # 2. 解析可用提供商
         provider, cfg = self._resolve_provider()
         if not provider:
+            # 区分两种情况：完全没配 vs 配了但不支持 web_search
+            cfgs = api_config_manager.get_enabled_llm_configs()
+            unsupported = []
+            supported = []
+            templates = settings.llm_providers or {}
+            for c in cfgs:
+                tpl = templates.get(c["id"], {})
+                if tpl.get("supports_web_search"):
+                    supported.append(c["id"])
+                else:
+                    unsupported.append(c["id"])
+            if cfgs and not supported:
+                log_collector.warn(EVENT_SCRAPER, f"联网搜索被拒绝：已配置的 provider 不支持 web_search 工具",
+                                    {"unsupported": unsupported})
+                return {
+                    "status": "not_supported",
+                    "error": f"已配置 LLM 密钥（{', '.join(unsupported)}），但这些模型 API 不支持内置 web_search 工具。"
+                             f"联网搜索仅 OpenAI / Anthropic / Google Gemini / Azure OpenAI 支持。"
+                             f"请前往「API 配置」页 → 新增 OpenAI 或 Anthropic 密钥后重试。",
+                    "guidance": "apiconfig",
+                    "sources": [], "keyword": keyword,
+                }
             log_collector.warn(EVENT_SCRAPER, "联网搜索被拒绝：未配置 LLM 密钥")
             return {
                 "status": "not_configured",
