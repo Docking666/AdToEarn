@@ -26,6 +26,7 @@ from .modules.api_config import api_config_manager, DOMAIN_LLM, DOMAIN_VIDEO
 from .modules.app_logger import log_collector, LEVEL_INFO, EVENT_SYSTEM
 from .modules.web_search import web_search
 from .modules.audit import audit_service, SEV_CRITICAL, SEV_HIGH, SEV_MEDIUM, SEV_LOW
+from .modules.field_mapper import field_mapper
 
 # 创建 FastAPI 应用
 app = FastAPI(
@@ -120,6 +121,18 @@ class AuditImportRequest(BaseModel):
 
 class AuditImportFileRequest(BaseModel):
     """审计数据导入请求（文本内容 + 格式）"""
+    content: str = ""
+    format: str = "csv"  # csv | json
+
+
+class AuditFieldMapRequest(BaseModel):
+    """字段映射配置请求（用户指定/纠正列名 → 标准字段）"""
+    column_name: str
+    standard_field: Optional[str] = None  # None/空 = 取消映射
+
+
+class AuditFieldDetectRequest(BaseModel):
+    """字段探测请求（CSV 内容 → 返回列名 + 自动映射建议）"""
     content: str = ""
     format: str = "csv"  # csv | json
 
@@ -527,6 +540,73 @@ async def audit_sample():
 async def audit_clear():
     """清空审计数据"""
     return audit_service.clear()
+
+
+# ==================== 字段映射 API（Phase1） ====================
+
+@app.get("/api/audit/fields/standard")
+async def audit_standard_fields():
+    """获取标准字段定义（label/unit/required/warn）"""
+    return {
+        "standard_fields": field_mapper.get_standard_fields(),
+        "user_state": field_mapper.get_user_state(),
+        "synonyms": field_mapper.get_synonyms(),
+    }
+
+
+@app.post("/api/audit/fields/detect")
+async def audit_fields_detect(req: AuditFieldDetectRequest):
+    """探测 CSV/JSON 内容的所有列名 → 返回自动映射建议（三层 fallback）
+    不落库，仅用于上传前的字段识别与映射配置
+    """
+    if not req.content.strip():
+        raise HTTPException(status_code=400, detail="内容不能为空")
+    try:
+        if req.format == "json":
+            records = audit_service.parse_json(req.content.encode("utf-8"))
+        else:
+            records = audit_service.parse_csv(req.content.encode("utf-8"))
+    except (ValueError, Exception) as e:
+        raise HTTPException(status_code=400, detail=f"解析失败: {e}")
+    if not records or not isinstance(records[0], dict):
+        return {"columns": [], "row_count": 0}
+    columns = list(records[0].keys())
+    # 批量匹配
+    matches = field_mapper.match_batch(columns)
+    # 取前 3 行样本数据
+    samples = {col: [r.get(col, "") for r in records[:3]] for col in columns}
+    return {
+        "columns": columns,
+        "row_count": len(records),
+        "matches": matches,
+        "samples": samples,
+    }
+
+
+@app.get("/api/audit/field-map")
+async def audit_field_map_get():
+    """获取当前字段映射配置（显式映射 + 学习的同义词）"""
+    return {
+        "explicit_map": field_mapper._user_state.get("explicit_map", {}),
+        "user_synonyms": field_mapper._user_state.get("user_synonyms", {}),
+        "synonyms": field_mapper.get_synonyms(),
+    }
+
+
+@app.post("/api/audit/field-map")
+async def audit_field_map_set(req: AuditFieldMapRequest):
+    """设置/纠正字段映射（持久化到 config/audit_field_map.json）"""
+    field_mapper.set_explicit(req.column_name, req.standard_field)
+    return {"ok": True, "column_name": req.column_name, "standard_field": req.standard_field}
+
+
+@app.post("/api/audit/field-map/learn")
+async def audit_field_map_learn(req: AuditFieldMapRequest):
+    """永久学习一个同义词（写入 user_synonyms，下次同名列自动命中）"""
+    if not req.standard_field:
+        raise HTTPException(status_code=400, detail="standard_field 不能为空")
+    field_mapper.learn_synonym(req.column_name, req.standard_field)
+    return {"ok": True, "alias": req.column_name, "standard_field": req.standard_field}
 
 
 # ==================== 启动事件 ====================

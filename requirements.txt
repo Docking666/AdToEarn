@@ -24,3 +24,8 @@ opencv-python-headless>=4.10.0.84
 python-dotenv>=1.0.1
 aiofiles>=24.1.0
 rich>=13.8.0
+
+# Audit - 字段映射引擎（模糊匹配，C++ 后端，零 LLM 依赖）
+rapidfuzz>=3.0.0
+# Audit - Excel 导出（Phase5）
+openpyxl>=3.1.0

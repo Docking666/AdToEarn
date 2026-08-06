@@ -521,10 +521,51 @@
                     <p>投放效果可视化分析：总览指标 · 时间趋势 · 账户对比 · 异常风险（参照 Claude-ads 设计思路）</p>
                 </header>
 
+                <!-- 拖拽上传区（支持任意 CSV） -->
+                <div class="upload-zone audit-upload" :class="{ dragover: auditDragOver }"
+                     @click="auditCsvInput.click()"
+                     @dragover.prevent="auditDragOver = true"
+                     @dragleave.prevent="auditDragOver = false"
+                     @drop.prevent="onAuditDrop">
+                    <svg width="36" height="36" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M12 16V4m0 0L8 8m4-4l4 4M4 16v3a1 1 0 001 1h14a1 1 0 001-1v-3"/></svg>
+                    <p><strong>{{ auditUploadFile ? auditUploadFile.name : '拖拽 CSV/JSON 文件到此处' }}</strong> 或点击选择</p>
+                    <p class="hint">系统自动识别所有字段，不做强制映射；可配置字段别名统一各平台命名</p>
+                    <input ref="auditCsvInput" type="file" class="hidden-input" accept=".csv,.json" @change="onAuditFileSelect">
+                </div>
+
+                <!-- 字段映射配置面板（探测后显示） -->
+                <div v-if="auditFieldDetect" class="audit-field-map-panel">
+                    <div class="audit-fm-head">
+                        <h3>字段映射配置</h3>
+                        <span class="audit-fm-meta">{{ auditFieldDetect.row_count }} 行 · {{ auditFieldDetect.columns.length }} 列</span>
+                        <button class="btn small" @click="auditFieldDetect = null">收起</button>
+                    </div>
+                    <p class="audit-fm-hint">系统已自动识别字段（三层：同义词字典 → 模糊匹配 → 人工兜底）。可调整映射后导入。</p>
+                    <div class="audit-fm-grid">
+                        <div v-for="col in auditFieldDetect.columns" :key="col" class="audit-fm-row" :class="{ unmapped: !auditFieldDetect.matches[col]?.standard_field }">
+                            <div class="audit-fm-col">
+                                <strong>{{ col }}</strong>
+                                <span class="audit-fm-sample">{{ (auditFieldDetect.samples[col] || []).join(' / ') }}</span>
+                            </div>
+                            <span class="audit-fm-badge" :class="auditFieldDetect.matches[col]?.layer">{{ auditMapLayerLabel(auditFieldDetect.matches[col]?.layer) }}</span>
+                            <select v-model="auditFieldMapEdit[col]" class="field select audit-fm-select" @change="onAuditFieldMapChange(col)">
+                                <option value="">— 不映射 —</option>
+                                <option v-for="(meta, std) in auditStandardFields" :key="std" :value="std">{{ meta.label }}（{{ std }}）</option>
+                            </select>
+                            <span v-if="auditFieldDetect.matches[col]?.standard_field && auditStandardFields[auditFieldDetect.matches[col].standard_field]?.warn"
+                                  class="audit-fm-warn">⚠️</span>
+                        </div>
+                    </div>
+                    <div class="audit-fm-actions">
+                        <button class="btn primary" :disabled="auditLoading.import" @click="confirmAuditImport">
+                            {{ auditLoading.import ? '导入中…' : '确认导入 ' + auditFieldDetect.row_count + ' 行' }}
+                        </button>
+                        <button class="btn" @click="auditFieldDetect = null">取消</button>
+                    </div>
+                </div>
+
                 <!-- 数据导入工具条 -->
                 <div class="audit-toolbar">
-                    <input ref="auditCsvInput" type="file" class="hidden-input" accept=".csv,.json" @change="onAuditFileSelect">
-                    <button class="btn" @click="auditCsvInput.click()">📥 导入 CSV/JSON</button>
                     <button class="btn" :disabled="auditLoading.sample" @click="generateAuditSample">
                         {{ auditLoading.sample ? '生成中…' : '✨ 生成示例数据' }}
                     </button>

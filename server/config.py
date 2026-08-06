@@ -172,6 +172,16 @@ class Settings:
         return BASE_DIR / spec.get("audit", "data_file", default="cache/audit_data.json")
 
     @property
+    def audit_field_map_file(self) -> Path:
+        """字段映射配置持久化文件（用户映射 + 学习的同义词）"""
+        return BASE_DIR / spec.get("audit", "field_map_file", default="config/audit_field_map.json")
+
+    @property
+    def audit_field_map(self) -> dict:
+        """字段映射引擎配置 (来自 spec)"""
+        return spec.get("audit", "field_map", default={})
+
+    @property
     def audit_sample(self) -> dict:
         """示例数据生成参数 (来自 spec)"""
         return spec.get("audit", "sample", default={})

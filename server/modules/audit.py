@@ -6,15 +6,12 @@
   - 账户维度数据对比
   - 异常 / 风险提示（分级：critical / high / medium / low）
 
-数据模型（日粒度投放记录 DailyRecord，SDD 字段定义见 spec.yaml audit 域）：
-  account          账户名
-  date             投放日期 YYYY-MM-DD
-  impressions      曝光量
-  clicks           点击量
-  conversions      转化量
-  spend            花费（元）
-  conversion_value 转化价值（元，可选）
-  sample           bool 是否为示例数据（演示/测试用）
+数据模型（双轨制，Phase1 升级）：
+  每条记录 = { raw: {原始所有字段}, mapped: {映射后标准字段}, tags: {} }
+  raw   : 用户上传 CSV 的原始字段，全部保留，不做任何强制映射
+  mapped: 经字段映射引擎处理后的 7 个标准字段（account/date/impressions/clicks/
+          conversions/spend/conversion_value），用于指标计算与异常检测
+  tags  : 行级标签（Phase2 批量打标用），结构 {group_name: [tag_values]}
 
 派生指标：CTR / CVR / CPC / CPM / CPA / ROAS
 
@@ -37,6 +34,7 @@ from typing import Any, Optional
 
 from ..config import settings
 from .app_logger import log_collector, EVENT_SYSTEM, EVENT_CONFIG
+from .field_mapper import field_mapper
 
 # 严重度级别
 SEV_CRITICAL = "critical"
@@ -102,28 +100,46 @@ class AuditService:
         return {"ok": True, "count": 0}
 
     def get_meta(self) -> dict:
-        """数据元信息：记录数 / 账户列表 / 时间范围 / 是否含示例数据"""
+        """数据元信息：记录数 / 账户列表 / 时间范围 / 是否含示例数据 / 原始字段列表"""
         records = self._load()
-        accounts = sorted({r.get("account", "") for r in records if r.get("account")})
-        dates = sorted(r.get("date", "") for r in records if r.get("date"))
+        accounts = sorted({r.get("mapped", {}).get("account", "") for r in records if r.get("mapped", {}).get("account")})
+        dates = sorted(r.get("mapped", {}).get("date", "") for r in records if r.get("mapped", {}).get("date"))
         has_sample = any(r.get("sample") for r in records)
+        # 收集所有 raw 字段（供前端表格列展示）
+        raw_fields = []
+        seen = set()
+        for r in records:
+            for k in r.get("raw", {}).keys():
+                if k not in seen:
+                    seen.add(k)
+                    raw_fields.append(k)
         return {
             "record_count": len(records),
             "accounts": accounts,
             "date_min": dates[0] if dates else None,
             "date_max": dates[-1] if dates else None,
             "has_sample": has_sample,
+            "raw_fields": raw_fields,
             "metric_meta": METRIC_META,
             "severity_labels": SEV_LABELS,
         }
 
     def import_records(self, records: list, source: str = "upload") -> dict:
-        """批量导入记录（覆盖式：导入即替换，保持与 api_config 保存语义一致）"""
+        """批量导入记录（覆盖式：导入即替换，保持与 api_config 保存语义一致）
+        Phase1 升级：自动调用 field_mapper 将原始列名映射到标准字段
+        """
         normalized = []
         errors = []
+        # 第 1 行用于推断列名 → 字段映射（同批数据假设列名一致）
+        column_map = {}
+        if records and isinstance(records[0], dict):
+            for col in records[0].keys():
+                m = field_mapper.match(col)
+                if m["standard_field"]:
+                    column_map[col] = m["standard_field"]
         for i, raw in enumerate(records):
             try:
-                rec = self._normalize(raw)
+                rec = self._normalize(raw, column_map)
                 if rec:
                     normalized.append(rec)
             except ValueError as e:
@@ -134,64 +150,67 @@ class AuditService:
             self._save(normalized)
         log_collector.info(EVENT_CONFIG, f"审计数据导入成功: {len(normalized)} 条", {
             "source": source, "errors": len(errors),
+            "mapped_fields": list(column_map.keys()),
         })
-        return {"ok": True, "imported": len(normalized), "errors": errors}
+        return {"ok": True, "imported": len(normalized), "errors": errors, "column_map": column_map}
 
-    def _normalize(self, raw: dict) -> Optional[dict]:
-        """单条记录标准化与校验（支持中英文列名别名）"""
+    def _normalize(self, raw: dict, column_map: Optional[dict] = None) -> Optional[dict]:
+        """单条记录标准化与校验
+        Phase1 双轨制：保留 raw 原始所有字段 + 构建 mapped 标准字段
+        column_map: 预先匹配好的 {原始列名: 标准字段} 映射；为 None 时按列名逐个匹配
+        """
         if not isinstance(raw, dict):
             raise ValueError("记录必须是对象")
 
-        def pick(*keys):
-            for k in keys:
-                if k in raw and raw[k] not in (None, ""):
-                    return raw[k]
-            return None
+        # raw: 原始所有字段保留
+        raw_clean = {k: v for k, v in raw.items() if v is not None and v != ""}
 
-        # 账户名（缺省补「未分组账户」）
-        account = pick("account", "账户", "账户名", "ad_account")
-        if account is None:
-            account = "未分组账户"
-        account = str(account).strip() or "未分组账户"
+        # 构建 mapped: 标准字段
+        mapped = {}
+        for raw_col, value in raw_clean.items():
+            if column_map and raw_col in column_map:
+                std_field = column_map[raw_col]
+            elif column_map is None:
+                m = field_mapper.match(raw_col)
+                std_field = m["standard_field"]
+            else:
+                std_field = None
+            if std_field and std_field not in mapped:
+                mapped[std_field] = value
 
-        # 日期
-        date_val = pick("date", "日期", "day", "投放日期")
-        if date_val is None:
-            raise ValueError("缺少日期 (date)")
+        # 必需字段校验（account/date）
+        if not mapped.get("account"):
+            mapped["account"] = "未分组账户"
+        if not mapped.get("date"):
+            raise ValueError("缺少日期字段（需映射到 date 标准字段）")
         try:
-            d = self._parse_date(str(date_val))
+            d = self._parse_date(str(mapped["date"]))
+            mapped["date"] = d.isoformat()
         except ValueError:
-            raise ValueError(f"日期格式无效: {date_val}（应为 YYYY-MM-DD）")
+            raise ValueError(f"日期格式无效: {mapped['date']}（应为 YYYY-MM-DD）")
+        mapped["account"] = str(mapped["account"]).strip() or "未分组账户"
 
-        def num(key, *aliases, default=0.0):
-            v = pick(key, *aliases)
-            if v is None:
-                return default
-            try:
-                n = float(str(v).replace(",", "").replace("¥", "").replace("元", "").strip())
-                return n
-            except (TypeError, ValueError):
-                raise ValueError(f"数值字段无效: {key}={v}")
+        # 数值字段：清洗 + 类型转换
+        for num_field in ("impressions", "clicks", "conversions", "spend", "conversion_value"):
+            if num_field in mapped:
+                try:
+                    v = str(mapped[num_field]).replace(",", "").replace("¥", "").replace("元", "").replace("$", "").strip()
+                    mapped[num_field] = float(v) if num_field in ("spend", "conversion_value") else int(float(v))
+                except (TypeError, ValueError):
+                    raise ValueError(f"数值字段无效: {num_field}={mapped[num_field]}")
+            else:
+                mapped[num_field] = 0 if num_field != "conversion_value" else 0.0
+        mapped["spend"] = round(float(mapped["spend"]), 2)
+        mapped["conversion_value"] = round(float(mapped["conversion_value"]), 2)
 
-        impressions = num("impressions", "曝光", "曝光量", "展示量", "imp")
-        clicks = num("clicks", "点击", "点击量")
-        conversions = num("conversions", "转化", "转化量", "转化数")
-        spend = num("spend", "花费", "消耗", "金额", "cost", default=0.0)
-        conversion_value = num("conversion_value", "转化价值", "转化金额", "销售额", default=0.0)
-
-        rec = {
-            "account": account,
-            "date": d.isoformat(),
-            "impressions": int(impressions),
-            "clicks": int(clicks),
-            "conversions": int(conversions),
-            "spend": round(spend, 2),
-            "conversion_value": round(conversion_value, 2),
-        }
-        # 全 0 记录视为无效行（跳过，避免污染指标）
-        if impressions <= 0 and clicks <= 0 and conversions <= 0 and spend <= 0 and conversion_value <= 0:
+        # 全 0 记录视为无效行
+        if (mapped["impressions"] <= 0 and mapped["clicks"] <= 0
+                and mapped["conversions"] <= 0 and mapped["spend"] <= 0
+                and mapped["conversion_value"] <= 0):
             raise ValueError("该行无有效数值（全为 0）")
-        # 示例数据标记透传（不上传 CSV 场景，仅生成器使用）
+
+        # 双轨记录
+        rec = {"raw": raw_clean, "mapped": mapped, "tags": {}}
         if raw.get("sample"):
             rec["sample"] = True
         return rec
@@ -238,12 +257,18 @@ class AuditService:
     # ==================== 指标计算 ====================
     @staticmethod
     def _calc(records: list) -> dict:
-        """聚合计算关键指标（对给定记录集合）"""
-        impressions = sum(int(r.get("impressions", 0)) for r in records)
-        clicks = sum(int(r.get("clicks", 0)) for r in records)
-        conversions = sum(int(r.get("conversions", 0)) for r in records)
-        spend = sum(float(r.get("spend", 0)) for r in records)
-        conv_value = sum(float(r.get("conversion_value", 0)) for r in records)
+        """聚合计算关键指标（对给定记录集合，读 mapped 域）"""
+        def get(r, k, default=0):
+            v = r.get("mapped", {}).get(k, default)
+            try:
+                return float(v) if k in ("spend", "conversion_value") else int(v)
+            except (TypeError, ValueError):
+                return default
+        impressions = sum(get(r, "impressions") for r in records)
+        clicks = sum(get(r, "clicks") for r in records)
+        conversions = sum(get(r, "conversions") for r in records)
+        spend = sum(get(r, "spend", 0.0) for r in records)
+        conv_value = sum(get(r, "conversion_value", 0.0) for r in records)
         return {
             "impressions": impressions,
             "clicks": clicks,
@@ -264,10 +289,10 @@ class AuditService:
         metrics = self._calc(records)
         anomalies = self.detect_anomalies(records)
         health = self._health_score(anomalies)
-        accounts = len({r.get("account") for r in records})
+        accounts = len({r.get("mapped", {}).get("account") for r in records})
         metrics.update({
             "account_count": accounts,
-            "day_count": len({r.get("date") for r in records}),
+            "day_count": len({r.get("mapped", {}).get("date") for r in records}),
             "record_count": len(records),
         })
         return {
@@ -285,7 +310,9 @@ class AuditService:
         records = self._filter(account=account, days=days)
         by_date = defaultdict(list)
         for r in records:
-            by_date[r["date"]].append(r)
+            d = r.get("mapped", {}).get("date")
+            if d:
+                by_date[d].append(r)
         trend = []
         for d in sorted(by_date.keys()):
             daily = self._calc(by_date[d])
@@ -298,12 +325,14 @@ class AuditService:
         records = self._filter(days=days)
         by_acc = defaultdict(list)
         for r in records:
-            by_acc[r["account"]].append(r)
+            acc = r.get("mapped", {}).get("account")
+            if acc:
+                by_acc[acc].append(r)
         result = []
         for acc, recs in sorted(by_acc.items()):
             m = self._calc(recs)
             m["account"] = acc
-            m["day_count"] = len({r["date"] for r in recs})
+            m["day_count"] = len({r.get("mapped", {}).get("date") for r in recs})
             m["record_count"] = len(recs)
             result.append(m)
         return result
@@ -326,7 +355,7 @@ class AuditService:
         anomalies = []
         anomaly_cfg = settings.audit_anomaly
         total = self._calc(records)
-        dates_all = sorted({r["date"] for r in records})
+        dates_all = sorted({r.get("mapped", {}).get("date", "") for r in records})
 
         # ---- 全局样本检查 ----
         if total["impressions"] < int(anomaly_cfg.get("min_impressions", 10000)):
@@ -348,9 +377,9 @@ class AuditService:
         no_conv_days = int(anomaly_cfg.get("no_conversion_days", 3))
 
         for acc, acc_recs in self._group_by_account(records).items():
-            dates = sorted({r["date"] for r in acc_recs})
+            dates = sorted({r.get("mapped", {}).get("date", "") for r in acc_recs})
             # 账户内每日聚合（跨账户隔离，避免被全局平均稀释）
-            day_map = {d: self._calc([r for r in acc_recs if r["date"] == d]) for d in dates}
+            day_map = {d: self._calc([r for r in acc_recs if r.get("mapped", {}).get("date") == d]) for d in dates}
             prev_window = []  # 前 7 日指标列表
 
             for i, d in enumerate(dates):
@@ -458,17 +487,19 @@ class AuditService:
     def _group_by_account(records: list) -> dict:
         by_acc = defaultdict(list)
         for r in records:
-            by_acc[r["account"]].append(r)
+            acc = r.get("mapped", {}).get("account")
+            if acc:
+                by_acc[acc].append(r)
         return dict(by_acc)
 
     def _filter(self, account: Optional[str] = None, days: Optional[int] = None) -> list:
-        """按账户与最近 N 天过滤记录"""
+        """按账户与最近 N 天过滤记录（基于 mapped 域）"""
         records = self._load()
         if account:
-            records = [r for r in records if r.get("account") == account]
+            records = [r for r in records if r.get("mapped", {}).get("account") == account]
         if days:
             cutoff = (datetime.now() - timedelta(days=days)).date().isoformat()
-            records = [r for r in records if r.get("date", "") >= cutoff]
+            records = [r for r in records if r.get("mapped", {}).get("date", "") >= cutoff]
         return records
 
     # ==================== 示例数据生成 ====================
@@ -522,13 +553,25 @@ class AuditService:
                     conversion_value = 0
 
                 records.append({
-                    "account": acc,
-                    "date": d.isoformat(),
-                    "impressions": impressions,
-                    "clicks": clicks,
-                    "conversions": conversions,
-                    "spend": spend,
-                    "conversion_value": conversion_value,
+                    "raw": {
+                        "account": acc,
+                        "date": d.isoformat(),
+                        "impressions": impressions,
+                        "clicks": clicks,
+                        "conversions": conversions,
+                        "spend": spend,
+                        "conversion_value": conversion_value,
+                    },
+                    "mapped": {
+                        "account": acc,
+                        "date": d.isoformat(),
+                        "impressions": impressions,
+                        "clicks": clicks,
+                        "conversions": conversions,
+                        "spend": spend,
+                        "conversion_value": conversion_value,
+                    },
+                    "tags": {},
                     "sample": True,
                 })
         with self._lock:

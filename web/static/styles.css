@@ -347,4 +347,31 @@ body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC"
   .audit-health-score { font-size: 32px; margin-bottom: 0; }
   .audit-chart-head { flex-direction: column; align-items: flex-start; }
 }
+
+/* ===== 字段映射配置面板（Phase1） ===== */
+.audit-upload { padding: 36px 20px; margin-bottom: 14px; }
+.audit-field-map-panel { background: var(--bg2); border: 1px solid var(--acc); border-radius: var(--radius); padding: 18px; margin-bottom: 14px; }
+.audit-fm-head { display: flex; align-items: center; gap: 12px; margin-bottom: 8px; }
+.audit-fm-head h3 { font-size: 15px; flex: 1; }
+.audit-fm-meta { font-size: 12px; color: var(--text3); }
+.audit-fm-hint { font-size: 12px; color: var(--text2); margin-bottom: 12px; line-height: 1.6; }
+.audit-fm-grid { display: flex; flex-direction: column; gap: 6px; max-height: 360px; overflow-y: auto; padding-right: 4px; }
+.audit-fm-row { display: grid; grid-template-columns: 1fr 60px 200px 20px; gap: 10px; align-items: center; padding: 8px 10px; background: var(--bg3); border: 1px solid var(--border); border-radius: 8px; }
+.audit-fm-row.unmapped { border-color: rgba(251,191,36,.4); background: rgba(251,191,36,.04); }
+.audit-fm-col { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.audit-fm-col strong { font-size: 13px; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.audit-fm-sample { font-size: 11px; color: var(--text3); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.audit-fm-badge { font-size: 10px; padding: 2px 6px; border-radius: 6px; text-align: center; }
+.audit-fm-badge.exact { background: rgba(52,211,153,.15); color: var(--green); }
+.audit-fm-badge.fuzzy { background: rgba(96,165,250,.15); color: var(--blue); }
+.audit-fm-badge.user { background: rgba(99,102,241,.15); color: #a5b4fc; }
+.audit-fm-badge.none { background: rgba(251,191,36,.15); color: var(--amber); }
+.audit-fm-select { min-width: 0; padding: 6px 10px; font-size: 12px; }
+.audit-fm-warn { font-size: 14px; }
+.audit-fm-actions { display: flex; gap: 10px; margin-top: 14px; }
+
+@media (max-width: 900px) {
+  .audit-fm-row { grid-template-columns: 1fr; gap: 6px; }
+  .audit-fm-badge, .audit-fm-select { width: 100%; }
+}
 @media (max-width: 640px) { .audit-metrics-grid { grid-template-columns: 1fr 1fr; } }

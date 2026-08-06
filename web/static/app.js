@@ -284,18 +284,26 @@ createApp({
 
     // ===== 广告账户审计 =====
     const auditCsvInput = ref(null);
-    const auditMeta = reactive({ record_count: 0, accounts: [], date_min: null, date_max: null, has_sample: false });
+    const auditMeta = reactive({ record_count: 0, accounts: [], date_min: null, date_max: null, has_sample: false, raw_fields: [] });
     const auditSummary = ref(null);
     const auditTrend = ref([]);
     const auditAccounts = ref([]);
     const auditAnomalies = ref([]);
-    const auditLoading = reactive({ sample: false, clear: false, import: false });
+    const auditLoading = reactive({ sample: false, clear: false, import: false, detect: false });
     const auditFilter = reactive({ account: "", days: 0 });
     const auditChartType = ref("volume");
     const auditTrendChart = ref(null);
     const auditAccountChart = ref(null);
     let auditTrendChartInst = null;
     let auditAccountChartInst = null;
+    // Phase1: 拖拽上传 + 字段映射
+    const auditDragOver = ref(false);
+    const auditUploadFile = ref(null);
+    const auditFieldDetect = ref(null);        // 探测结果 {columns, row_count, matches, samples}
+    const auditFieldMapEdit = reactive({});    // 用户编辑中的映射 {col: standard_field}
+    const auditStandardFields = ref({});       // 标准字段定义
+    const auditPendingContent = ref("");       // 待导入的文件内容
+    const auditPendingFormat = ref("csv");
 
     const auditMetricCards = computed(() => {
       const m = auditSummary.value?.metrics;
@@ -410,27 +418,102 @@ createApp({
 
     function onAuditFileSelect(e) {
       const file = e.target.files[0];
-      if (!file) return;
+      if (file) handleAuditFile(file);
+      e.target.value = "";
+    }
+
+    function onAuditDrop(e) {
+      auditDragOver.value = false;
+      const file = e.dataTransfer.files[0];
+      if (file) handleAuditFile(file);
+    }
+
+    async function handleAuditFile(file) {
+      auditUploadFile.value = file;
+      const fmt = file.name.toLowerCase().endsWith(".json") ? "json" : "csv";
+      auditLoading.detect = true;
+      auditFieldDetect.value = null;
       const reader = new FileReader();
       reader.onload = async () => {
-        const fmt = file.name.toLowerCase().endsWith(".json") ? "json" : "csv";
-        auditLoading.import = true;
+        const content = String(reader.result || "");
+        auditPendingContent.value = content;
+        auditPendingFormat.value = fmt;
         try {
-          const res = await fetch("/api/audit/import/file", {
+          // 1. 探测字段
+          const res = await fetch("/api/audit/fields/detect", {
             method: "POST", headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ content: String(reader.result || ""), format: fmt }),
+            body: JSON.stringify({ content, format: fmt }),
           });
           const d = await res.json();
-          if (d.ok) {
-            alert(`导入成功：${d.imported} 条记录` + (d.errors?.length ? `（${d.errors.length} 行错误）` : ""));
-            await refreshAudit();
+          if (res.ok && d.columns) {
+            auditFieldDetect.value = d;
+            // 初始化编辑态：用自动匹配结果填充
+            for (const col of d.columns) {
+              auditFieldMapEdit[col] = d.matches[col]?.standard_field || "";
+            }
+            // 加载标准字段定义（首次）
+            if (!Object.keys(auditStandardFields.value).length) {
+              await loadAuditStandardFields();
+            }
           } else {
-            alert("导入失败：" + JSON.stringify(d.errors || d.detail || d));
+            alert("字段探测失败：" + (d.detail || JSON.stringify(d)));
           }
-        } catch (err) { alert("导入失败：" + err.message); }
-        finally { auditLoading.import = false; e.target.value = ""; }
+        } catch (err) { alert("文件读取失败：" + err.message); }
+        finally { auditLoading.detect = false; }
       };
       reader.readAsText(file);
+    }
+
+    async function loadAuditStandardFields() {
+      try {
+        const d = await (await fetch("/api/audit/fields/standard")).json();
+        auditStandardFields.value = d.standard_fields || {};
+      } catch (e) {}
+    }
+
+    const auditMapLayerLabel = (layer) => ({
+      exact: "自动", fuzzy: "模糊", user: "已配置", none: "未映射"
+    }[layer] || "");
+
+    async function onAuditFieldMapChange(col) {
+      // 用户调整映射 → 实时保存到后端
+      const std = auditFieldMapEdit[col] || "";
+      try {
+        await fetch("/api/audit/field-map", {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ column_name: col, standard_field: std || null }),
+        });
+        // 更新本地 matches 状态
+        if (auditFieldDetect.value) {
+          auditFieldDetect.value.matches[col] = {
+            standard_field: std || null,
+            layer: std ? "user" : "none",
+            confidence: std ? 1.0 : 0,
+          };
+        }
+      } catch (e) {}
+    }
+
+    async function confirmAuditImport() {
+      // 确认导入：发送文件内容 + 用户映射
+      auditLoading.import = true;
+      try {
+        const res = await fetch("/api/audit/import/file", {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ content: auditPendingContent.value, format: auditPendingFormat.value }),
+        });
+        const d = await res.json();
+        if (d.ok) {
+          alert(`导入成功：${d.imported} 条记录` + (d.errors?.length ? `（${d.errors.length} 行错误）` : ""));
+          auditFieldDetect.value = null;
+          auditUploadFile.value = null;
+          auditPendingContent.value = "";
+          await refreshAudit();
+        } else {
+          alert("导入失败：" + JSON.stringify(d.errors || d.detail || d));
+        }
+      } catch (err) { alert("导入失败：" + err.message); }
+      finally { auditLoading.import = false; }
     }
 
     async function generateAuditSample() {
@@ -749,6 +832,9 @@ createApp({
       auditLoading, auditFilter, auditChartType, auditTrendChart, auditAccountChart,
       auditMetricCards, severityLabel, severityBadge, fmtNum, fmtMoney,
       loadAuditAll, switchAuditChart, onAuditFileSelect, generateAuditSample, clearAuditData,
+      // Phase1: 拖拽 + 字段映射
+      auditDragOver, auditUploadFile, auditFieldDetect, auditFieldMapEdit, auditStandardFields,
+      onAuditDrop, handleAuditFile, auditMapLayerLabel, onAuditFieldMapChange, confirmAuditImport,
       // 悬浮日志
       logPanel, logBody, filteredLogs, logFabRef,
       toggleLogPanel, toggleLogFilter, clearLogs,

@@ -229,20 +229,157 @@ generator:
 # 广告账户审计 (Audit)
 # 对投放效果进行可视化数据分析：总览指标 / 时间趋势 / 账户对比 / 异常风险
 # 数据来源：用户通过 WebUI 导入（CSV/JSON）或生成示例数据（标注 sample=true）
-# 字段含义（日粒度投放记录 DailyRecord）：
-#   account          账户名（如：主账户-品牌）
-#   date             投放日期 YYYY-MM-DD
-#   impressions      曝光量
-#   clicks           点击量
-#   conversions      转化量
-#   spend            花费（元）
-#   conversion_value 转化价值（元，可选，用于计算 ROAS）
+#
+# 数据模型（双轨制，Phase1 升级）：
+#   每条记录 = { raw: {原始所有字段}, mapped: {映射后标准字段}, tags: {} }
+#   raw   : 用户上传 CSV 的原始字段，全部保留，不做任何强制映射
+#   mapped: 经字段映射引擎处理后的 7 个标准字段（account/date/impressions/clicks/
+#           conversions/spend/conversion_value），用于指标计算与异常检测
+#   tags  : 行级标签（Phase2 批量打标用），结构 {group_name: [tag_values]}
+#
+# 字段映射引擎（三层 fallback，参照 Supermetrics/Funnel 业界实践，0 LLM 成本）：
+#   1) 同义词字典精确匹配（预置中英文 + 用户扩展自动学习）
+#   2) rapidfuzz 模糊匹配（Levenshtein + Jaro-Winkler 混合评分）
+#   3) 人工兜底（前端高亮未映射字段，用户选择后自动写入字典）
 # 派生指标：CTR=点击/曝光 · CVR=转化/点击 · CPC=花费/点击 · CPM=花费/曝光*1000
 #          CPA=花费/转化 · ROAS=转化价值/花费
 # ------------------------------------------------------------
 audit:
   # 数据持久化文件（运行时生成，不入库）
   data_file: "cache/audit_data.json"
+  # 字段映射配置持久化（用户自定义映射 + 学习的同义词）
+  field_map_file: "config/audit_field_map.json"
+
+  # 字段映射引擎配置
+  field_map:
+    # 模糊匹配阈值（0-1，低于此分数不自动匹配，留给人工）
+    fuzzy_threshold: 0.85
+    # 标准字段定义（mapped 域的 7 个字段 + 业务语义）
+    # label       前端展示名
+    # unit        单位（用于指标卡）
+    # required    是否必需（缺则指标卡隐藏，但不阻塞导入）
+    # warn        口径警告（映射时前端提示）
+    standard_fields:
+      account:
+        label: "账户"
+        unit: ""
+        required: true
+        warn: ""
+      date:
+        label: "日期"
+        unit: ""
+        required: true
+        warn: ""
+      impressions:
+        label: "曝光量"
+        unit: ""
+        required: false
+        warn: ""
+      clicks:
+        label: "点击量"
+        unit: ""
+        required: false
+        warn: "⚠️ Meta 的 clicks 含资料页点击，与 Google 的 link_clicks 口径不同"
+      conversions:
+        label: "转化量"
+        unit: ""
+        required: false
+        warn: "⚠️ 各平台转化归因窗口不同（Meta 7d click+1d view / Google 30d click），跨平台对比需统一口径"
+      spend:
+        label: "花费"
+        unit: "¥"
+        required: false
+        warn: "⚠️ 多币种需先统一汇率再对比"
+      conversion_value:
+        label: "转化价值"
+        unit: "¥"
+        required: false
+        warn: ""
+    # 预置中英文同义词字典（业界主流平台字段别名）
+    # 格式：标准字段: [别名列表]；用户纠正过的映射会自动追加到此字典的"用户扩展"区
+    synonyms:
+      account:
+        - "账户"
+        - "账户名"
+        - "账户名称"
+        - "广告账户"
+        - "ad_account"
+        - "account_name"
+        - "account_id"
+        - "customer_id"
+        - "账户 ID"
+      date:
+        - "日期"
+        - "投放日期"
+        - "统计日期"
+        - "day"
+        - "report_date"
+        - "date_start"
+        - "date_end"
+        - "segments.date"
+        - "统计时间"
+        - "时间"
+      impressions:
+        - "曝光"
+        - "曝光量"
+        - "展示量"
+        - "展现量"
+        - "imp"
+        - "impr"
+        - "impressions_count"
+        - "impression_cnt"
+        - "impr_cnt"
+        - "展示次数"
+        - "曝光次数"
+      clicks:
+        - "点击"
+        - "点击量"
+        - "点击次数"
+        - "游玩量"
+        - "link_clicks"
+        - "link_click"
+        - "clicks_count"
+        - "click_cnt"
+        - "clk"
+        - "点击数"
+      conversions:
+        - "转化"
+        - "转化量"
+        - "转化数"
+        - "转化次数"
+        - "conversion"
+        - "conversions_count"
+        - "转化人数"
+        - "订单数"
+        - "购买数"
+      spend:
+        - "花费"
+        - "消耗"
+        - "金额"
+        - "cost"
+        - "费用"
+        - "广告费"
+        - "spend_amount"
+        - "cost_micros"
+        - "total_spend"
+        - "消耗金额"
+        - "实际花费"
+      conversion_value:
+        - "转化价值"
+        - "转化金额"
+        - "销售额"
+        - "收入"
+        - "revenue"
+        - "conversion_value"
+        - "conv_value"
+        - "conv_val"
+        - "order_value"
+        - "GMV"
+        - "转化收入"
+        - "订单金额"
+    # 用户扩展同义词（运行时自动学习用户纠正的映射，初始为空）
+    user_synonyms: {}
+
   # 示例数据生成参数（用于演示/测试，前端标注「示例数据」）
   sample:
     days: 30
