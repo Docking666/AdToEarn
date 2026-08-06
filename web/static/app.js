@@ -304,6 +304,18 @@ createApp({
     const auditStandardFields = ref({});       // 标准字段定义
     const auditPendingContent = ref("");       // 待导入的文件内容
     const auditPendingFormat = ref("csv");
+    // Phase2: 原始数据表格 + 批量打标
+    const auditRecords = ref([]);               // 原始记录列表（含 raw+tags）
+    const auditRecordTotal = ref(0);
+    const auditRecordOffset = ref(0);
+    const auditRecordLimit = 20;
+    const auditRecordsLoading = ref(false);
+    const auditSelectedRows = ref([]);          // 选中的行索引
+    const auditDisplayFields = ref([]);         // 表格展示的 raw 字段列表
+    const auditTagLibrary = ref({ groups: [] }); // 标签库
+    const showTagPanel = ref(false);
+    const auditPendingTags = reactive({});      // 待打标的标签 {group_id: [tags]}
+    const auditTagMode = ref("add");
 
     const auditMetricCards = computed(() => {
       const m = auditSummary.value?.metrics;
@@ -516,6 +528,82 @@ createApp({
       finally { auditLoading.import = false; }
     }
 
+    // ===== Phase2: 原始数据表格 + 批量打标 =====
+    async function loadAuditRecords() {
+      auditRecordsLoading.value = true;
+      try {
+        const params = new URLSearchParams();
+        if (auditFilter.account) params.set("account", auditFilter.account);
+        if (auditFilter.days) params.set("days", auditFilter.days);
+        params.set("limit", auditRecordLimit);
+        params.set("offset", auditRecordOffset.value);
+        const d = await (await fetch(`/api/audit/records/tagged?${params}`)).json();
+        auditRecords.value = d.records || [];
+        auditRecordTotal.value = d.total || 0;
+        // 更新展示字段（取 raw 字段，最多 8 列避免过宽）
+        if (auditRecords.value.length) {
+          auditDisplayFields.value = Object.keys(auditRecords.value[0].raw || {}).slice(0, 8);
+        }
+      } catch (e) { console.error(e); }
+      finally { auditRecordsLoading.value = false; }
+    }
+
+    async function loadAuditTagLibrary() {
+      try {
+        const d = await (await fetch("/api/audit/tags/library")).json();
+        auditTagLibrary.value = d;
+      } catch (e) {}
+    }
+
+    const auditTagGroupName = (gid) => {
+      const g = auditTagLibrary.value.groups?.find(x => x.id === gid);
+      return g ? g.name : gid;
+    };
+
+    function toggleSelectAll(e) {
+      if (e.target.checked) {
+        auditSelectedRows.value = auditRecords.value.map(r => r.index);
+      } else {
+        auditSelectedRows.value = [];
+      }
+    }
+
+    function togglePendingTag(gid, tag) {
+      if (!auditPendingTags[gid]) auditPendingTags[gid] = [];
+      const idx = auditPendingTags[gid].indexOf(tag);
+      if (idx >= 0) auditPendingTags[gid].splice(idx, 1);
+      else auditPendingTags[gid].push(tag);
+    }
+
+    async function applyBatchTag() {
+      if (!auditSelectedRows.value.length) return;
+      // 对每个有 pending tags 的组执行打标
+      const groups = Object.keys(auditPendingTags).filter(gid => auditPendingTags[gid].length);
+      if (!groups.length && auditTagMode.value !== "clear") {
+        alert("请至少选择一个标签");
+        return;
+      }
+      for (const gid of groups) {
+        try {
+          await fetch("/api/audit/tag/batch", {
+            method: "POST", headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              row_indices: auditSelectedRows.value,
+              group_id: gid,
+              tags: auditPendingTags[gid],
+              mode: auditTagMode.value,
+            }),
+          });
+        } catch (e) { console.error(e); }
+      }
+      // 如果是 clear 模式且没选标签，需要传 group_id（从 pendingTags 取第一个或让用户选）
+      auditPendingTags.value = {};
+      showTagPanel.value = false;
+      auditSelectedRows.value = [];
+      await loadAuditRecords();
+      alert("打标完成");
+    }
+
     async function generateAuditSample() {
       auditLoading.sample = true;
       try {
@@ -541,7 +629,12 @@ createApp({
 
     async function refreshAudit() {
       await loadAuditMeta();
-      if (auditMeta.record_count) await loadAuditAll();
+      await loadAuditTagLibrary();
+      if (auditMeta.record_count) {
+        await loadAuditAll();
+        auditRecordOffset.value = 0;
+        await loadAuditRecords();
+      }
     }
 
     // 页面切换 / 窗口尺寸变化时渲染图表
@@ -835,6 +928,11 @@ createApp({
       // Phase1: 拖拽 + 字段映射
       auditDragOver, auditUploadFile, auditFieldDetect, auditFieldMapEdit, auditStandardFields,
       onAuditDrop, handleAuditFile, auditMapLayerLabel, onAuditFieldMapChange, confirmAuditImport,
+      // Phase2: 原始数据表格 + 批量打标
+      auditRecords, auditRecordTotal, auditRecordOffset, auditRecordsLoading, auditSelectedRows,
+      auditDisplayFields, auditTagLibrary, showTagPanel, auditPendingTags, auditTagMode,
+      loadAuditRecords, loadAuditTagLibrary, auditTagGroupName, toggleSelectAll,
+      togglePendingTag, applyBatchTag,
       // 悬浮日志
       logPanel, logBody, filteredLogs, logFabRef,
       toggleLogPanel, toggleLogFilter, clearLogs,

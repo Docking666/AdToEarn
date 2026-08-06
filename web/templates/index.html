@@ -652,6 +652,76 @@
                         </div>
                     </div>
 
+                    <!-- 原始数据表格 + 批量打标（Phase2） -->
+                    <div class="audit-chart-card">
+                        <div class="audit-chart-head">
+                            <h3>原始数据与批量打标</h3>
+                            <div class="audit-table-tools">
+                                <button class="btn small" @click="loadAuditRecords">刷新</button>
+                                <button class="btn small" :disabled="!auditSelectedRows.length" @click="showTagPanel = !showTagPanel">
+                                    {{ showTagPanel ? '收起标签面板' : '打标 (' + auditSelectedRows.length + ' 行)' }}
+                                </button>
+                            </div>
+                        </div>
+
+                        <!-- 标签库面板 -->
+                        <div v-if="showTagPanel && auditSelectedRows.length" class="audit-tag-panel">
+                            <div v-for="g in auditTagLibrary.groups" :key="g.id" class="audit-tag-group">
+                                <div class="audit-tg-head">
+                                    <strong>{{ g.name }}</strong>
+                                    <span class="audit-tg-desc">{{ g.description }}</span>
+                                </div>
+                                <div class="audit-tg-tags">
+                                    <span v-for="t in g.tags" :key="t" class="audit-tag-chip"
+                                          :class="{ selected: auditPendingTags[g.id]?.includes(t) }"
+                                          @click="togglePendingTag(g.id, t)">{{ t }}</span>
+                                </div>
+                            </div>
+                            <div class="audit-tag-actions">
+                                <select v-model="auditTagMode" class="field select">
+                                    <option value="add">追加</option>
+                                    <option value="replace">替换</option>
+                                    <option value="remove">移除</option>
+                                    <option value="clear">清空</option>
+                                </select>
+                                <button class="btn primary small" @click="applyBatchTag">确认打标</button>
+                                <button class="btn small" @click="auditPendingTags = {}; showTagPanel = false">取消</button>
+                            </div>
+                        </div>
+
+                        <!-- 数据表格 -->
+                        <div class="audit-data-table">
+                            <div v-if="auditRecordsLoading" class="loading-state"><div class="spinner"></div></div>
+                            <table v-else>
+                                <thead>
+                                    <tr>
+                                        <th class="col-check"><input type="checkbox" @change="toggleSelectAll($event)" :checked="auditSelectedRows.length === auditRecords.length && auditRecords.length > 0"></th>
+                                        <th v-for="f in auditDisplayFields" :key="f">{{ f }}</th>
+                                        <th>标签</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    <tr v-for="rec in auditRecords" :key="rec.index" :class="{ selected: auditSelectedRows.includes(rec.index) }">
+                                        <td class="col-check"><input type="checkbox" :value="rec.index" v-model="auditSelectedRows"></td>
+                                        <td v-for="f in auditDisplayFields" :key="f">{{ rec.raw[f] ?? '' }}</td>
+                                        <td class="col-tags">
+                                            <span v-for="(tags, gid) in rec.tags" :key="gid" class="audit-row-tag-group">
+                                                <span class="audit-row-tag-label">{{ auditTagGroupName(gid) }}:</span>
+                                                <span v-for="t in tags" :key="t" class="audit-row-tag">{{ t }}</span>
+                                            </span>
+                                            <span v-if="!Object.keys(rec.tags).length" class="audit-no-tag">—</span>
+                                        </td>
+                                    </tr>
+                                </tbody>
+                            </table>
+                            <div class="audit-table-pager">
+                                <button class="btn small" :disabled="auditRecordOffset === 0" @click="auditRecordOffset = Math.max(0, auditRecordOffset - auditRecordLimit); loadAuditRecords()">上一页</button>
+                                <span class="audit-pager-info">{{ auditRecordOffset + 1 }}-{{ Math.min(auditRecordOffset + auditRecordLimit, auditRecordTotal) }} / {{ auditRecordTotal }}</span>
+                                <button class="btn small" :disabled="auditRecordOffset + auditRecordLimit >= auditRecordTotal" @click="auditRecordOffset = auditRecordOffset + auditRecordLimit; loadAuditRecords()">下一页</button>
+                            </div>
+                        </div>
+                    </div>
+
                     <!-- 异常/风险提示 -->
                     <div class="audit-chart-card">
                         <div class="audit-chart-head">

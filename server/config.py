@@ -182,6 +182,16 @@ class Settings:
         return spec.get("audit", "field_map", default={})
 
     @property
+    def audit_tag_groups(self) -> list:
+        """预设标签组 (来自 spec)"""
+        return spec.get("audit", "tag_groups", default=[])
+
+    @property
+    def audit_tag_lib_file(self) -> Path:
+        """用户自定义标签库持久化文件"""
+        return BASE_DIR / spec.get("audit", "tag_lib_file", default="config/audit_tag_lib.json")
+
+    @property
     def audit_sample(self) -> dict:
         """示例数据生成参数 (来自 spec)"""
         return spec.get("audit", "sample", default={})

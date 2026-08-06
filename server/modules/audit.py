@@ -579,6 +579,109 @@ class AuditService:
         log_collector.info(EVENT_SYSTEM, f"已生成审计示例数据: {len(records)} 条 / {len(accounts)} 账户 / {days} 天")
         return {"ok": True, "imported": len(records), "sample": True}
 
+    # ==================== 标签库管理（Phase2） ====================
+    @property
+    def _tag_lib_file(self) -> Path:
+        return settings.audit_tag_lib_file
+
+    def _load_tag_lib(self) -> dict:
+        """加载用户自定义标签库（覆盖/扩展 spec 预设）"""
+        if self._tag_lib_file.exists():
+            try:
+                return json.loads(self._tag_lib_file.read_text(encoding="utf-8"))
+            except (json.JSONDecodeError, OSError):
+                pass
+        # 初始化：用 spec 预设标签组
+        lib = {"groups": settings.audit_tag_groups}
+        return lib
+
+    def _save_tag_lib(self, lib: dict):
+        self._tag_lib_file.parent.mkdir(parents=True, exist_ok=True)
+        self._tag_lib_file.write_text(json.dumps(lib, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    def get_tag_library(self) -> dict:
+        """获取标签库（预设 + 用户自定义合并）"""
+        return self._load_tag_lib()
+
+    def add_tag_to_group(self, group_id: str, tag: str) -> dict:
+        """向标签组添加一个标签值"""
+        lib = self._load_tag_lib()
+        for g in lib.get("groups", []):
+            if g["id"] == group_id:
+                if tag not in g.get("tags", []):
+                    g.setdefault("tags", []).append(tag)
+                    self._save_tag_lib(lib)
+                return {"ok": True, "group": g}
+        return {"ok": False, "error": f"标签组 {group_id} 不存在"}
+
+    def add_tag_group(self, group_id: str, name: str, description: str = "") -> dict:
+        """新增一个标签组"""
+        lib = self._load_tag_lib()
+        for g in lib.get("groups", []):
+            if g["id"] == group_id:
+                return {"ok": False, "error": f"标签组 {group_id} 已存在"}
+        lib.setdefault("groups", []).append({
+            "id": group_id, "name": name, "description": description, "tags": []
+        })
+        self._save_tag_lib(lib)
+        return {"ok": True, "group": lib["groups"][-1]}
+
+    # ==================== 行级打标（Phase2） ====================
+    def batch_tag(self, row_indices: list, group_id: str, tags: list, mode: str = "add") -> dict:
+        """批量打标：对指定行追加/替换/移除标签
+        row_indices: 行索引列表（0-based，对应 _load() 返回的列表索引）
+        group_id: 标签组 ID
+        tags: 标签值列表
+        mode: add(追加) / replace(替换) / remove(移除指定标签) / clear(清空该组)
+        """
+        with self._lock:
+            records = self._load()
+            tagged_count = 0
+            for idx in row_indices:
+                if 0 <= idx < len(records):
+                    rec = records[idx]
+                    rec.setdefault("tags", {})
+                    if mode == "clear":
+                        rec["tags"].pop(group_id, None)
+                    elif mode == "remove":
+                        existing = rec["tags"].get(group_id, [])
+                        rec["tags"][group_id] = [t for t in existing if t not in tags]
+                        if not rec["tags"][group_id]:
+                            rec["tags"].pop(group_id)
+                    elif mode == "replace":
+                        rec["tags"][group_id] = list(tags)
+                    else:  # add
+                        existing = rec["tags"].get(group_id, [])
+                        for t in tags:
+                            if t not in existing:
+                                existing.append(t)
+                        rec["tags"][group_id] = existing
+                    tagged_count += 1
+            self._save(records)
+        log_collector.info(EVENT_CONFIG, f"批量打标: {tagged_count} 行 / 组={group_id} / 模式={mode}", {
+            "row_count": tagged_count, "group": group_id, "tags": tags, "mode": mode,
+        })
+        return {"ok": True, "tagged": tagged_count, "group_id": group_id, "mode": mode}
+
+    def get_records_with_tags(self, account: Optional[str] = None, days: Optional[int] = None,
+                              limit: int = 500, offset: int = 0) -> dict:
+        """获取原始记录（含 raw + tags），分页"""
+        records = self._filter(account=account, days=days)
+        total = len(records)
+        # 分页
+        page = records[offset:offset + limit]
+        # 返回 raw + tags + 索引（供前端多选用）
+        result = []
+        for i, r in enumerate(page):
+            result.append({
+                "index": offset + i,
+                "raw": r.get("raw", {}),
+                "mapped": r.get("mapped", {}),
+                "tags": r.get("tags", {}),
+                "sample": r.get("sample", False),
+            })
+        return {"records": result, "total": total, "limit": limit, "offset": offset}
+
 
 # 全局单例
 audit_service = AuditService()

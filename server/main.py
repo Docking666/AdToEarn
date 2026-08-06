@@ -137,6 +137,21 @@ class AuditFieldDetectRequest(BaseModel):
     format: str = "csv"  # csv | json
 
 
+class AuditTagBatchRequest(BaseModel):
+    """批量打标请求"""
+    row_indices: list = []       # 行索引列表（0-based）
+    group_id: str = ""           # 标签组 ID
+    tags: list = []              # 标签值列表
+    mode: str = "add"            # add | replace | remove | clear
+
+
+class AuditTagGroupRequest(BaseModel):
+    """新增标签组请求"""
+    group_id: str = ""
+    name: str = ""
+    description: str = ""
+
+
 # ==================== 页面路由 ====================
 
 @app.get("/", response_class=HTMLResponse)
@@ -607,6 +622,47 @@ async def audit_field_map_learn(req: AuditFieldMapRequest):
         raise HTTPException(status_code=400, detail="standard_field 不能为空")
     field_mapper.learn_synonym(req.column_name, req.standard_field)
     return {"ok": True, "alias": req.column_name, "standard_field": req.standard_field}
+
+
+# ==================== 标签库与打标 API（Phase2） ====================
+
+@app.get("/api/audit/tags/library")
+async def audit_tag_library():
+    """获取标签库（预设 + 用户自定义合并）"""
+    return audit_service.get_tag_library()
+
+
+@app.post("/api/audit/tags/group")
+async def audit_tag_group_add(req: AuditTagGroupRequest):
+    """新增标签组"""
+    if not req.group_id or not req.name:
+        raise HTTPException(status_code=400, detail="group_id 和 name 不能为空")
+    return audit_service.add_tag_group(req.group_id, req.name, req.description)
+
+
+@app.post("/api/audit/tags/add")
+async def audit_tag_add(group_id: str = "", tag: str = ""):
+    """向标签组添加一个标签值"""
+    if not group_id or not tag:
+        raise HTTPException(status_code=400, detail="group_id 和 tag 不能为空")
+    return audit_service.add_tag_to_group(group_id, tag)
+
+
+@app.post("/api/audit/tag/batch")
+async def audit_tag_batch(req: AuditTagBatchRequest):
+    """批量打标：对指定行追加/替换/移除标签"""
+    if not req.group_id:
+        raise HTTPException(status_code=400, detail="group_id 不能为空")
+    if not req.row_indices:
+        raise HTTPException(status_code=400, detail="row_indices 不能为空")
+    return audit_service.batch_tag(req.row_indices, req.group_id, req.tags, req.mode)
+
+
+@app.get("/api/audit/records/tagged")
+async def audit_records_tagged(account: Optional[str] = None, days: Optional[int] = None,
+                               limit: int = 100, offset: int = 0):
+    """获取原始记录（含 raw + tags），分页，供前端表格展示与打标"""
+    return audit_service.get_records_with_tags(account=account, days=days, limit=limit, offset=offset)
 
 
 # ==================== 启动事件 ====================
