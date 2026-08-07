@@ -42,30 +42,45 @@ createApp({
     // ===== 提供商模板 =====
     const llmProviders = ref([]);
     const videoProviders = ref([]);
-    const savedConfigs = ref({ llm: {}, video: {} });
+    const searchProvidersMeta = ref({ search_api: {}, search_mcp: {} });
+    const savedConfigs = ref({ llm: {}, video: {}, search: {} });
     loadProviders();
     loadApiConfigs();
 
     async function loadProviders() {
       try {
-        const [llm, vid] = await Promise.all([
+        const [llm, vid, srch] = await Promise.all([
           fetch("/api/apiconfig/providers?domain=llm").then(r => r.json()),
           fetch("/api/apiconfig/providers?domain=video").then(r => r.json()),
+          fetch("/api/apiconfig/providers?domain=search").then(r => r.json()),
         ]);
         llmProviders.value = llm.providers || [];
         videoProviders.value = vid.providers || [];
+        // search domain 特殊结构：返回 [{id: group_id, providers: {...}}, ...]
+        const meta = { search_api: {}, search_mcp: {} };
+        for (const g of srch.providers || []) {
+          if (g.id in meta) meta[g.id] = g.providers || {};
+        }
+        searchProvidersMeta.value = meta;
       } catch (e) {}
     }
 
     async function loadApiConfigs() {
       try {
         savedConfigs.value = await (await fetch("/api/apiconfig")).json();
-      } catch (e) { savedConfigs.value = { llm: {}, video: {} }; }
+        loadSearchForm();  // 同步搜索源表单（即使不在 search tab 也确保表单初始化）
+      } catch (e) {
+        savedConfigs.value = { llm: {}, video: {}, search: {} };
+      }
     }
 
     const configuredLlmCount = computed(() => Object.keys(savedConfigs.value.llm || {}).length);
     const configuredVideoCount = computed(() => Object.keys(savedConfigs.value.video || {}).length);
-    const configuredProviderCount = computed(() => configuredLlmCount.value + configuredVideoCount.value);
+    const configuredSearchCount = computed(() => {
+      const s = savedConfigs.value.search || {};
+      return Object.values(s).filter(g => g && g.enabled && g.provider).length;
+    });
+    const configuredProviderCount = computed(() => configuredLlmCount.value + configuredVideoCount.value + configuredSearchCount.value);
 
     // 当前 LLM 是否支持视觉（用于解析页引导）
     const healthLLMVision = computed(() => {
@@ -180,12 +195,133 @@ createApp({
       if (editingProvider.value === pid) { editingProvider.value = null; configForm.provider = ""; }
     }
 
+    // 搜索源配置 state
+    const searchForm = reactive({
+      search_api: {
+        enabled: false, provider: "", providers: {},  // providers[pid] = {base_url, api_key, url}
+      },
+      search_mcp: {
+        enabled: false, provider: "", providers: {},
+      },
+    });
+    const testTarget = ref(null);  // 用于搜索源测试结果定位（testResult 共享）
+
+    function buildEmptySearchForm() {
+      return {
+        search_api: { enabled: false, provider: "", providers: {} },
+        search_mcp: { enabled: false, provider: "", providers: {} },
+      };
+    }
+
+    function _ensureProviderForm(form, gid, pid) {
+      // 保证 providers[pid] 有空对象，否则 v-model 双向绑定会报错
+      if (!form[gid].providers[pid]) {
+        const meta = searchProvidersMeta.value[gid]?.[pid] || {};
+        form[gid].providers[pid] = {
+          base_url: meta.base_url_default || "",
+          url: meta.url_default || "",
+          api_key: "",
+        };
+      }
+      return form[gid].providers[pid];
+    }
+
+    // 从 savedConfigs.search 加载到 searchForm（保留已保存的 key 脱敏展示/启用/provider）
+    function loadSearchForm() {
+      const empty = buildEmptySearchForm();
+      const s = savedConfigs.value.search || {};
+      for (const gid of ["search_api", "search_mcp"]) {
+        const cfg = s[gid];
+        if (cfg) {
+          empty[gid].enabled = !!cfg.enabled;
+          empty[gid].provider = cfg.provider || "";
+          empty[gid].providers = {};
+          for (const pid of Object.keys(cfg.providers || {})) {
+            const persisted = cfg.providers[pid] || {};
+            empty[gid].providers[pid] = {
+              base_url: persisted.base_url || "",
+              url: persisted.url || "",
+              api_key: "",  // api_key 永远从空开始（脱敏显示 placeholder）
+            };
+          }
+        }
+      }
+      // 浅拷贝赋值
+      searchForm.search_api = empty.search_api;
+      searchForm.search_mcp = empty.search_mcp;
+    }
+
+    function searchKeyHint(gid, pid) {
+      const persisted = savedConfigs.value.search?.[gid]?.providers?.[pid];
+      if (persisted?.api_key_masked) {
+        return `已保存密钥 ${persisted.api_key_masked}（留空保持不变）`;
+      }
+      return "输入 API Key（留空使用环境变量）";
+    }
+
+    async function saveSearchConfig(gid) {
+      saving.value = true;
+      testTarget.value = gid;
+      try {
+        const payload = {
+          enabled: searchForm[gid].enabled,
+          provider: searchForm[gid].provider,
+          providers: searchForm[gid].providers,
+        };
+        const res = await fetch(`/api/apiconfig/search/${gid}`, {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload),
+        });
+        const d = await res.json();
+        if (d.ok) {
+          await loadApiConfigs();
+          loadSearchForm();  // 刷新表单（重置 api_key 字段为空）
+          testResult.value = { ok: true, message: "已保存" };
+        } else {
+          testResult.value = { ok: false, error: d.detail || "保存失败" };
+        }
+      } catch (e) {
+        testResult.value = { ok: false, error: "网络错误" };
+      } finally {
+        saving.value = false;
+      }
+    }
+
+    async function testSearchConnection(gid) {
+      testing.value = true;
+      testResult.value = null;
+      testTarget.value = gid;
+      const pid = searchForm[gid].provider;
+      if (!pid) {
+        testResult.value = { ok: false, error: "请先选择 provider" };
+        testing.value = false;
+        return;
+      }
+      const pcfg = searchForm[gid].providers[pid] || {};
+      try {
+        const res = await fetch(`/api/apiconfig/search/${gid}/test`, {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            provider: pid,
+            providers: { [pid]: { base_url: pcfg.base_url, url: pcfg.url, api_key: pcfg.api_key } },
+          }),
+        });
+        testResult.value = await res.json();
+      } catch (e) {
+        testResult.value = { ok: false, error: "网络错误" };
+      } finally {
+        testing.value = false;
+      }
+    }
+
     function switchConfigDomain(domain) {
       configDomain.value = domain;
       editingProvider.value = null;
       configForm.provider = "";
       configForm.api_key = "";
       testResult.value = null;
+      testTarget.value = null;
+      if (domain === "search") loadSearchForm();
     }
 
     // ===== 素材生成（创意方案 + 视频统一） =====
@@ -815,7 +951,23 @@ createApp({
       return `来源：${r.source} | 共 ${r.total_creatives || r.keywords?.length || 0} 个素材，提取 ${r.keywords?.length || 0} 个关键词`;
     });
 
-    const statusText = (s) => ({ success: "成功", failed: "失败", mock: "模拟", partial: "部分", no_results: "无结果" }[s] || s);
+    const statusText = (s) => ({ success: "成功", failed: "失败", mock: "失败", partial: "失败", no_results: "无结果" }[s] || s);
+    const scrapeFailed = (r) => r && (r.status === "failed" || r.status === "not_configured" || r.status === "not_supported");
+    function scrapeAuthHint(r) {
+      const err = (r?.error || "").toLowerCase();
+      if (!err) return "";
+      if (/auth|401|403|invalid api key|authentication|api[- ]?key.*invalid/.test(err)) {
+        const provider = (r?.provider || "").replace(/^native:|^api:|^mcp:/, "") || "LLM";
+        return `💡 检测到 ${provider} 的 API Key 无效或过期，请到「API 配置」核对密钥后再次保存（编辑现有配置留空密钥即可保持原值）。`;
+      }
+      if (/not_configured|未配置/.test(err)) {
+        return "💡 当前未配置任何可用的搜索源，请在「API 配置 → 搜索源」启用 provider 并填写 API Key，或配置 LLM 启用原生 web_search。";
+      }
+      if (/model|deepseek-v4-flash/.test(err)) {
+        return "💡 DeepSeek 联网搜索需要 deepseek-v4-flash 模型，或启用搜索 API / MCP 直连源。";
+      }
+      return "";
+    }
     const trendIcon = (t) => ({ up: "▲", down: "▼", stable: "•" }[t] || "");
 
     async function scrapeWebSearch() {
@@ -1057,18 +1209,21 @@ createApp({
       health, stats, steps,
       sources, styles, platforms,
       scrapeForm, scraping, searching, scrapeLoading, scrapeResult, scrapeMode, scrapeResultMeta,
-      statusText, trendIcon, scrapeTrending, scrapeSearch, scrapeWebSearch, useKeyword,
+      statusText, scrapeFailed, scrapeAuthHint, trendIcon, scrapeTrending, scrapeSearch, scrapeWebSearch, useKeyword,
       fileInput, dragOver, analyzing, analysis, handleDrop, handleFileSelect, kvText,
       // 素材生成（双产出）
       outputType, genForm, selectedStyle, generating, generation,
       generateCreatives, selectStyleByName, goGenerate,
       videoForm, videoGenerating, videoTask, recentVideoTasks, videoProviderMeta,
       onVideoProviderSelect, generateVideo, viewTask,
-      // API 配置（双域）
-      llmProviders, videoProviders, savedConfigs, configuredLlmCount, configuredVideoCount, configuredProviderCount, healthLLMVision,
+      // API 配置（三域：llm/video/search）
+      llmProviders, videoProviders, searchProvidersMeta, savedConfigs,
+      configuredLlmCount, configuredVideoCount, configuredSearchCount, configuredProviderCount, healthLLMVision,
       configDomain, configForm, editingProvider, editingProviderName, savedKeyHint,
-      activeProviders, activeConfigs, activeProviderMeta, testing, saving, testResult,
+      activeProviders, activeConfigs, activeProviderMeta, testing, saving, testResult, testTarget,
       switchConfigDomain, onProviderSelect, editConfig, testConnection, saveConfig, deleteConfig,
+      // 搜索源配置
+      searchForm, saveSearchConfig, testSearchConnection, searchKeyHint,
       wfInput, wfDragOver, wfFile, wfRunning, wfResult, wfStep, wfSteps, wfStepState, handleWfDrop, runWorkflow,
       // 广告账户审计
       auditCsvInput, auditMeta, auditSummary, auditTrend, auditAccounts, auditAnomalies,

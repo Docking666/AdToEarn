@@ -26,20 +26,39 @@ class McpSearchService:
     def _cfg(self) -> dict:
         return (settings.websearch or {}).get("search_mcp") or {}
 
-    def _key(self, pid: str) -> str:
-        pcfg = self._cfg().get(pid) or {}
-        env_name = pcfg.get("api_key_env", "")
-        return os.environ.get(env_name, "").strip() if env_name else ""
+    def _persisted(self) -> dict:
+        """从 api_config_manager 读 WebUI 持久化配置"""
+        try:
+            from .api_config import api_config_manager
+            return api_config_manager.get_search_persisted_config("search_mcp") or {}
+        except Exception:
+            return {}
+
+    def _resolved(self, pid: str) -> dict:
+        """合并持久化 + spec：返回 {api_key, url}（持久化优先）"""
+        spec_cfg = (self._cfg().get(pid) or {})
+        persisted_cfg = (self._persisted().get("providers") or {}).get(pid, {})
+        url = (persisted_cfg.get("url") or spec_cfg.get("url", "")).strip()
+        api_key = (persisted_cfg.get("api_key") or "").strip() or (
+            os.environ.get(spec_cfg.get("api_key_env", ""), "").strip()
+            if spec_cfg.get("api_key_env") else ""
+        )
+        return {"api_key": api_key, "url": url, "env_hint": spec_cfg.get("api_key_env", "")}
 
     def provider_id(self) -> str:
+        # 持久化 enabled=false → 当作未启用
+        if self._persisted() and not self._persisted().get("enabled", True):
+            return ""
+        persisted_pid = (self._persisted().get("provider") or "").strip()
+        if persisted_pid:
+            return persisted_pid
         return self._cfg().get("provider", "") or ""
 
     def available(self) -> bool:
         pid = self.provider_id()
         if not pid:
             return False
-        pcfg = self._cfg().get(pid) or {}
-        return bool(pcfg.get("url"))
+        return bool(self._resolved(pid).get("url"))
 
     async def search(self, query: str, days: int = 7, max_results: int = 10) -> dict:
         """统一搜索入口（异步，带超时）"""
@@ -66,9 +85,12 @@ class McpSearchService:
         from mcp import ClientSession
         from mcp.client.streamable_http import streamable_http_client
 
-        pcfg = self._cfg().get(pid) or {}
-        url = pcfg.get("url", "")
-        key = self._key(pid)
+        resolved = self._resolved(pid)
+        url = resolved["url"]
+        key = resolved["api_key"]
+        if not url:
+            return {"status": "not_configured", "sources": [], "total": 0,
+                    "error": f"MCP 搜索源（{pid}）未配置 URL（请在「API 配置 → 搜索源」配置或设置 spec 默认值）"}
         headers = {"Authorization": f"Bearer {key}"} if key else {}
 
         async with streamable_http_client(url, headers=headers) as (read, write, _):

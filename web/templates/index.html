@@ -130,6 +130,11 @@
                         <span class="badge" :class="scrapeResult.status">{{ statusText(scrapeResult.status) }}</span>
                     </div>
                     <p class="result-meta">{{ scrapeResultMeta }}</p>
+                    <!-- 失败时的精准引导（针对 key 无效/认证类错误） -->
+                    <div v-if="scrapeResult && scrapeFailed(scrapeResult) && scrapeAuthHint(scrapeResult)" class="result-hint">
+                        {{ scrapeAuthHint(scrapeResult) }}
+                        <button class="btn small" @click="switchPage('apiconfig')">前往「API 配置」→</button>
+                    </div>
                     <!-- 联网搜索来源卡片 -->
                     <div v-if="scrapeResult.sources" class="search-sources">
                         <div v-for="(s, i) in scrapeResult.sources" :key="i" class="search-source-item">
@@ -439,8 +444,86 @@
                     <button class="tab-btn" :class="{ active: configDomain === 'video' }" @click="switchConfigDomain('video')">
                         视频 API <span class="tab-count" :class="{ on: configuredVideoCount > 0 }">{{ configuredVideoCount }}</span>
                     </button>
+                    <button class="tab-btn" :class="{ active: configDomain === 'search' }" @click="switchConfigDomain('search')">
+                        搜索源 <span class="tab-count" :class="{ on: configuredSearchCount > 0 }">{{ configuredSearchCount }}</span>
+                    </button>
                 </div>
-                <div class="apiconfig-grid">
+                <!-- 搜索源专用布局（双卡片） -->
+                <div v-if="configDomain === 'search'" class="search-domain-grid">
+                    <div class="search-group-card">
+                        <div class="search-group-head">
+                            <h3>搜索 API 直连</h3>
+                            <label class="toggle-switch">
+                                <input type="checkbox" v-model="searchForm.search_api.enabled">
+                                <span>启用</span>
+                            </label>
+                        </div>
+                        <p class="search-group-desc">通过 HTTP API 直连第三方搜索服务（博查/Tavily），为不支持原生 web_search 的模型（如 deepseek-chat）提供联网搜索</p>
+                        <label class="field-label">当前 provider</label>
+                        <select v-model="searchForm.search_api.provider" class="field select full">
+                            <option value="">禁用（回退到环境变量 BOCHA_API_KEY / TAVILY_API_KEY）</option>
+                            <option v-for="(meta, pid) in searchProvidersMeta.search_api" :key="pid" :value="pid">{{ meta.name }}（{{ meta.description }}）</option>
+                        </select>
+                        <div v-if="searchForm.search_api.provider" class="search-provider-detail">
+                            <label class="field-label">{{ searchProvidersMeta.search_api[searchForm.search_api.provider].name }} 端点地址</label>
+                            <input v-model="searchForm.search_api.providers[searchForm.search_api.provider].base_url"
+                                   class="field input full" :placeholder="searchProvidersMeta.search_api[searchForm.search_api.provider].base_url_default">
+                            <label class="field-label">API Key</label>
+                            <input v-model="searchForm.search_api.providers[searchForm.search_api.provider].api_key"
+                                   type="password" class="field input full"
+                                   :placeholder="searchKeyHint('search_api', searchForm.search_api.provider)">
+                            <div class="form-actions">
+                                <button class="btn" :disabled="testing" @click="testSearchConnection('search_api')">{{ testing ? '测试中…' : '测试连接' }}</button>
+                                <button class="btn primary" :disabled="saving" @click="saveSearchConfig('search_api')">{{ saving ? '保存中…' : '保存配置' }}</button>
+                            </div>
+                            <div v-if="testResult && testTarget === 'search_api'" class="test-result" :class="testResult.ok ? 'ok' : 'fail'">
+                                <span v-if="testResult.ok">✓ {{ testResult.message || '连接成功' }}{{ testResult.latency_ms ? '（' + testResult.latency_ms + 'ms）' : '' }}</span>
+                                <span v-else>✗ {{ testResult.error }}</span>
+                            </div>
+                            <p class="env-hint">环境变量兜底：<span class="mono">{{ searchProvidersMeta.search_api[searchForm.search_api.provider].key_env_hint }}</span></p>
+                        </div>
+                        <p v-else class="field-hint">未选择 provider，将尝试读取环境变量 BOCHA_API_KEY / TAVILY_API_KEY（如已设置）</p>
+                    </div>
+                    <div class="search-group-card">
+                        <div class="search-group-head">
+                            <h3>搜索 MCP（官方服务）</h3>
+                            <label class="toggle-switch">
+                                <input type="checkbox" v-model="searchForm.search_mcp.enabled">
+                                <span>启用</span>
+                            </label>
+                        </div>
+                        <p class="search-group-desc">通过 MCP 协议连接官方搜索 MCP 服务（百炼/Tavily/GLM），自动探测工具与参数；适合追求最新能力的场景</p>
+                        <label class="field-label">当前 provider</label>
+                        <select v-model="searchForm.search_mcp.provider" class="field select full">
+                            <option value="">禁用（回退到环境变量 DASHSCOPE_API_KEY / GLM_API_KEY 等）</option>
+                            <option v-for="(meta, pid) in searchProvidersMeta.search_mcp" :key="pid" :value="pid">{{ meta.name }}（{{ meta.description }}）</option>
+                        </select>
+                        <div v-if="searchForm.search_mcp.provider" class="search-provider-detail">
+                            <label class="field-label">{{ searchProvidersMeta.search_mcp[searchForm.search_mcp.provider].name }} MCP URL</label>
+                            <input v-model="searchForm.search_mcp.providers[searchForm.search_mcp.provider].url"
+                                   class="field input full" :placeholder="searchProvidersMeta.search_mcp[searchForm.search_mcp.provider].url_default">
+                            <label class="field-label">API Key</label>
+                            <input v-model="searchForm.search_mcp.providers[searchForm.search_mcp.provider].api_key"
+                                   type="password" class="field input full"
+                                   :placeholder="searchKeyHint('search_mcp', searchForm.search_mcp.provider)">
+                            <div class="form-actions">
+                                <button class="btn" :disabled="testing" @click="testSearchConnection('search_mcp')">{{ testing ? '测试中…' : '测试连接' }}</button>
+                                <button class="btn primary" :disabled="saving" @click="saveSearchConfig('search_mcp')">{{ saving ? '保存中…' : '保存配置' }}</button>
+                            </div>
+                            <div v-if="testResult && testTarget === 'search_mcp'" class="test-result" :class="testResult.ok ? 'ok' : 'fail'">
+                                <span v-if="testResult.ok">✓ {{ testResult.message || '连接成功' }}{{ testResult.latency_ms ? '（' + testResult.latency_ms + 'ms）' : '' }}</span>
+                                <span v-else>✗ {{ testResult.error }}</span>
+                            </div>
+                            <p class="env-hint">环境变量兜底：<span class="mono">{{ searchProvidersMeta.search_mcp[searchForm.search_mcp.provider].key_env_hint }}</span></p>
+                        </div>
+                        <p v-else class="field-hint">未选择 provider，将尝试读取环境变量 DASHSCOPE_API_KEY / TAVILY_MCP_API_KEY / GLM_API_KEY（如已设置）</p>
+                    </div>
+                    <p class="search-domain-footnote">
+                        提示：WebUI 填写的密钥会持久化到 <code>config/api_config.json</code>（已加入 .gitignore）。如未启用 provider 或 WebUI 未填 key，将自动回退到环境变量
+                    </p>
+                </div>
+                <!-- LLM/视频原表单（search 域时隐藏） -->
+                <div v-else class="apiconfig-grid">
                     <div class="apiconfig-form">
                         <h3>{{ editingProvider ? '编辑: ' + editingProviderName : '新增 ' + (configDomain === 'llm' ? '大模型' : '视频') + ' API 配置' }}</h3>
                         <label class="field-label">API 提供商</label>

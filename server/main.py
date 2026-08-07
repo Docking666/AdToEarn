@@ -22,7 +22,7 @@ from .config import settings
 from .modules.scraper import scraper
 from .modules.reverse_parser import reverse_parser
 from .modules.generator import generator
-from .modules.api_config import api_config_manager, DOMAIN_LLM, DOMAIN_VIDEO
+from .modules.api_config import api_config_manager, DOMAIN_LLM, DOMAIN_VIDEO, DOMAIN_SEARCH
 from .modules.app_logger import log_collector, LEVEL_INFO, EVENT_SYSTEM
 from .modules.web_search import web_search
 from .modules.audit import audit_service, SEV_CRITICAL, SEV_HIGH, SEV_MEDIUM, SEV_LOW
@@ -76,6 +76,7 @@ class PromptVariationRequest(BaseModel):
 
 class ApiConfigSaveRequest(BaseModel):
     # LLM 域字段
+    provider: str = ""        # 通用：domain 内 provider id（LLM=模型 id；search=当前启用 provider 名）
     litellm_prefix: str = ""
     base_url: str = ""
     vision_model: str = ""
@@ -86,6 +87,8 @@ class ApiConfigSaveRequest(BaseModel):
     duration: int = 0
     resolution: str = ""
     aspect_ratio: str = ""
+    # search 域字段（嵌套结构）
+    providers: Optional[dict] = None
     # 通用
     api_key: str = ""
     enabled: bool = True
@@ -94,7 +97,12 @@ class ApiConfigSaveRequest(BaseModel):
 class ApiTestRequest(BaseModel):
     api_key: str = ""
     endpoint: str = ""
+    base_url: str = ""
     model: str = ""
+    provider: str = ""
+    providers: Optional[dict] = None
+    # 搜索源字段也允许
+    url: str = ""
     litellm_prefix: str = ""
     base_url: str = ""
 
@@ -189,6 +197,16 @@ async def health():
             "video": {
                 pid: ("configured" if (api_config_manager.get_config(DOMAIN_VIDEO, pid) or {}).get("api_key") else "not_configured")
                 for pid in settings.video_providers
+            },
+            "search": {
+                "search_api": "enabled" if (search_api_state := api_config_manager.get_search_persisted_config("search_api"))
+                                 and search_api_state.get("enabled") and search_api_state.get("provider")
+                                 and (search_api_state.get("providers", {}).get(search_api_state["provider"], {}) or {}).get("api_key")
+                                 else "not_configured",
+                "search_mcp": "enabled" if (mcp_state := api_config_manager.get_search_persisted_config("search_mcp"))
+                               and mcp_state.get("enabled") and mcp_state.get("provider")
+                               and (mcp_state.get("providers", {}).get(mcp_state["provider"], {}) or {}).get("api_key")
+                               else "not_configured",
             },
         },
         "scraper_available": True,
@@ -369,8 +387,8 @@ async def generate_variations(req: PromptVariationRequest):
 @app.get("/api/apiconfig/providers")
 async def api_providers(domain: str = DOMAIN_LLM):
     """获取指定域的提供商模板列表（llm/video，含自定义）"""
-    if domain not in (DOMAIN_LLM, DOMAIN_VIDEO):
-        raise HTTPException(status_code=400, detail="domain 必须为 llm 或 video")
+    if domain not in (DOMAIN_LLM, DOMAIN_VIDEO, DOMAIN_SEARCH):
+        raise HTTPException(status_code=400, detail="domain 必须为 llm / video / search")
     return {"domain": domain, "providers": api_config_manager.list_providers(domain)}
 
 
@@ -383,8 +401,8 @@ async def get_api_configs(domain: Optional[str] = None):
 @app.post("/api/apiconfig/{domain}/{provider_id}")
 async def save_api_config(domain: str, provider_id: str, req: ApiConfigSaveRequest):
     """保存/更新提供商配置（双域）"""
-    if domain not in (DOMAIN_LLM, DOMAIN_VIDEO):
-        raise HTTPException(status_code=400, detail="domain 必须为 llm 或 video")
+    if domain not in (DOMAIN_LLM, DOMAIN_VIDEO, DOMAIN_SEARCH):
+        raise HTTPException(status_code=400, detail="domain 必须为 llm / video / search")
     try:
         cfg = api_config_manager.save_config(domain, provider_id, req.model_dump())
         return {"ok": True, "config": cfg}
@@ -395,16 +413,16 @@ async def save_api_config(domain: str, provider_id: str, req: ApiConfigSaveReque
 @app.delete("/api/apiconfig/{domain}/{provider_id}")
 async def delete_api_config(domain: str, provider_id: str):
     """删除提供商配置（双域）"""
-    if domain not in (DOMAIN_LLM, DOMAIN_VIDEO):
-        raise HTTPException(status_code=400, detail="domain 必须为 llm 或 video")
+    if domain not in (DOMAIN_LLM, DOMAIN_VIDEO, DOMAIN_SEARCH):
+        raise HTTPException(status_code=400, detail="domain 必须为 llm / video / search")
     return {"ok": api_config_manager.delete_config(domain, provider_id)}
 
 
 @app.post("/api/apiconfig/{domain}/{provider_id}/test")
 async def test_api_connection(domain: str, provider_id: str, req: ApiTestRequest):
     """测试 API 连接（双域）"""
-    if domain not in (DOMAIN_LLM, DOMAIN_VIDEO):
-        raise HTTPException(status_code=400, detail="domain 必须为 llm 或 video")
+    if domain not in (DOMAIN_LLM, DOMAIN_VIDEO, DOMAIN_SEARCH):
+        raise HTTPException(status_code=400, detail="domain 必须为 llm / video / search")
     payload = req.model_dump()
     result = await api_config_manager.test_connection(domain, provider_id, payload)
     return result
