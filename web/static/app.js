@@ -206,17 +206,15 @@ createApp({
     });
     const testTarget = ref(null);  // 用于搜索源测试结果定位（testResult 共享）
 
-    function buildEmptySearchForm() {
-      return {
-        search_api: { enabled: false, provider: "", providers: {} },
-        search_mcp: { enabled: false, provider: "", providers: {} },
-      };
+    // 安全访问搜索 provider 元数据（未加载时返回 {}，避免 undefined.field 渲染崩溃）
+    function spm(gid, pid) {
+      return (searchProvidersMeta.value[gid] && searchProvidersMeta.value[gid][pid]) || {};
     }
 
     function _ensureProviderForm(form, gid, pid) {
-      // 保证 providers[pid] 有空对象，否则 v-model 双向绑定会报错
+      // 保证 providers[pid] 存在，否则 v-model 绑定 undefined 会渲染崩溃
       if (!form[gid].providers[pid]) {
-        const meta = searchProvidersMeta.value[gid]?.[pid] || {};
+        const meta = spm(gid, pid);
         form[gid].providers[pid] = {
           base_url: meta.base_url_default || "",
           url: meta.url_default || "",
@@ -224,6 +222,17 @@ createApp({
         };
       }
       return form[gid].providers[pid];
+    }
+
+    // provider 切换时立即创建 providers 条目（immediate 确保渲染前已就绪）
+    watch(() => searchForm.search_api.provider, (pid) => { if (pid) _ensureProviderForm(searchForm, "search_api", pid); }, { immediate: true });
+    watch(() => searchForm.search_mcp.provider, (pid) => { if (pid) _ensureProviderForm(searchForm, "search_mcp", pid); }, { immediate: true });
+
+    function buildEmptySearchForm() {
+      return {
+        search_api: { enabled: false, provider: "", providers: {} },
+        search_mcp: { enabled: false, provider: "", providers: {} },
+      };
     }
 
     // 从 savedConfigs.search 加载到 searchForm（保留已保存的 key 脱敏展示/启用/provider）
@@ -249,6 +258,9 @@ createApp({
       // 浅拷贝赋值
       searchForm.search_api = empty.search_api;
       searchForm.search_mcp = empty.search_mcp;
+      // 兜底：若已选 provider 但条目缺失（老数据/异常），立即创建
+      if (searchForm.search_api.provider) _ensureProviderForm(searchForm, "search_api", searchForm.search_api.provider);
+      if (searchForm.search_mcp.provider) _ensureProviderForm(searchForm, "search_mcp", searchForm.search_mcp.provider);
     }
 
     function searchKeyHint(gid, pid) {
@@ -1223,7 +1235,7 @@ createApp({
       activeProviders, activeConfigs, activeProviderMeta, testing, saving, testResult, testTarget,
       switchConfigDomain, onProviderSelect, editConfig, testConnection, saveConfig, deleteConfig,
       // 搜索源配置
-      searchForm, saveSearchConfig, testSearchConnection, searchKeyHint,
+      searchForm, spm, saveSearchConfig, testSearchConnection, searchKeyHint,
       wfInput, wfDragOver, wfFile, wfRunning, wfResult, wfStep, wfSteps, wfStepState, handleWfDrop, runWorkflow,
       // 广告账户审计
       auditCsvInput, auditMeta, auditSummary, auditTrend, auditAccounts, auditAnomalies,
