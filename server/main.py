@@ -44,8 +44,19 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# 静态文件
-app.mount("/static", StaticFiles(directory=str(settings.static_dir)), name="static")
+# 静态文件（禁用浏览器缓存，确保代码更新用户能立即拿到）
+app.mount("/static", StaticFiles(directory=str(settings.static_dir), html=False, check_dir=True),
+          name="static")
+
+
+# 通用中间件：静态资源不缓存（避免修复后用户卡在旧 JS 看不到效果）
+@app.middleware("http")
+async def no_cache_static(request, call_next):
+    resp = await call_next(request)
+    if request.url.path.startswith("/static/"):
+        resp.headers["Cache-Control"] = "no-store, must-revalidate"
+        resp.headers["Pragma"] = "no-cache"
+    return resp
 
 
 # ==================== 请求模型 ====================
