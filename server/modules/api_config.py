@@ -22,6 +22,32 @@ from .app_logger import log_collector, EVENT_CONFIG
 DOMAIN_LLM = "llm"
 DOMAIN_VIDEO = "video"
 DOMAIN_SEARCH = "search"
+DOMAIN_MCP = "mcp"
+
+# MCP 预设服务器（前端「添加预设」一键填充；kind=search 的服务器参与联网搜索路由）
+MCP_PRESET_SERVERS = {
+    "bailian_websearch": {
+        "name": "阿里云百炼 WebSearch",
+        "url": "https://dashscope.aliyuncs.com/api/v1/mcps/WebSearch/mcp",
+        "key_env_hint": "DASHSCOPE_API_KEY",
+        "description": "DashScope 服务，中文优化",
+        "kind": "search",
+    },
+    "tavily_mcp": {
+        "name": "Tavily MCP",
+        "url": "https://mcp.tavily.com/mcp",
+        "key_env_hint": "TAVILY_MCP_API_KEY",
+        "description": "MCP 协议直连 Tavily",
+        "kind": "search",
+    },
+    "glm_websearch": {
+        "name": "智谱 GLM WebSearch Prime",
+        "url": "https://open.bigmodel.cn/api/mcp/web_search_prime/mcp",
+        "key_env_hint": "GLM_API_KEY",
+        "description": "GLM WebSearch Prime 引擎，中文优秀",
+        "kind": "search",
+    },
+}
 
 # 搜索源固定 provider 模板（不走 spec.llm_providers）
 SEARCH_PROVIDERS = {
@@ -45,38 +71,11 @@ SEARCH_PROVIDERS = {
             },
         },
     },
-    "search_mcp": {
-        "label": "搜索 MCP（官方服务）",
-        "description": "通过 MCP 协议连接官方搜索 MCP 服务（百炼/Tavily/GLM）",
-        "providers": {
-            "bailian": {
-                "name": "阿里云百炼 WebSearch",
-                "url_default": "https://dashscope.aliyuncs.com/api/v1/mcps/WebSearch/mcp",
-                "key_env_hint": "DASHSCOPE_API_KEY",
-                "description": "DashScope 服务，中文优化",
-                "key_required": True,
-            },
-            "tavily_mcp": {
-                "name": "Tavily MCP",
-                "url_default": "https://mcp.tavily.com/mcp",
-                "key_env_hint": "TAVILY_MCP_API_KEY",
-                "description": "MCP 协议直连 Tavily",
-                "key_required": True,
-            },
-            "glm": {
-                "name": "智谱 GLM WebSearch Prime",
-                "url_default": "https://open.bigmodel.cn/api/mcp/web_search_prime/mcp",
-                "key_env_hint": "GLM_API_KEY",
-                "description": "GLM WebSearch Prime 引擎，中文优秀",
-                "key_required": True,
-            },
-        },
-    },
 }
 
 
 class ApiConfigManager:
-    """API 配置管理器（LLM + 视频双域）"""
+    """API 配置管理器（LLM + 视频 + 搜索 + MCP 四域）"""
 
     def __init__(self):
         self._lock = threading.Lock()
@@ -90,12 +89,13 @@ class ApiConfigManager:
             except (json.JSONDecodeError, OSError):
                 pass
             else:
-                # 兼容旧版本无 search 域
+                # 兼容旧版本无 search/mcp 域
                 data.setdefault(DOMAIN_LLM, {})
                 data.setdefault(DOMAIN_VIDEO, {})
                 data.setdefault(DOMAIN_SEARCH, {})
+                data.setdefault(DOMAIN_MCP, {})
                 return data
-        return {DOMAIN_LLM: {}, DOMAIN_VIDEO: {}, DOMAIN_SEARCH: {}}
+        return {DOMAIN_LLM: {}, DOMAIN_VIDEO: {}, DOMAIN_SEARCH: {}, DOMAIN_MCP: {}}
 
     def _save(self, data: dict):
         self._config_path.parent.mkdir(parents=True, exist_ok=True)
@@ -106,8 +106,32 @@ class ApiConfigManager:
     # ==================== 提供商元数据 ====================
     def list_providers(self, domain: str) -> list:
         """列出域内提供商模板
-        LLM/视频域：来自 spec.yaml（含 custom）；search 域：固定结构（SEARCH_PROVIDERS）
+        LLM/视频域：来自 spec.yaml（含 custom）；search 域：固定结构（SEARCH_PROVIDERS）；
+        mcp 域：预设服务器（MCP_PRESET_SERVERS）+ 已配置服务器
         """
+        if domain == DOMAIN_MCP:
+            data = self._load().get(DOMAIN_MCP, {})
+            servers = data.get("servers", {})
+            items = []
+            for sid, meta in MCP_PRESET_SERVERS.items():
+                items.append({
+                    "id": sid, "name": meta["name"], "domain": DOMAIN_MCP,
+                    "is_preset": True, "kind": meta.get("kind", "custom"),
+                    "url": meta.get("url", ""), "key_env_hint": meta.get("key_env_hint", ""),
+                    "description": meta.get("description", ""),
+                    "configured": sid in servers,
+                })
+            # 自定义服务器（非预设）
+            for sid, s in servers.items():
+                if sid in MCP_PRESET_SERVERS:
+                    continue
+                items.append({
+                    "id": sid, "name": s.get("name", sid), "domain": DOMAIN_MCP,
+                    "is_preset": False, "kind": s.get("kind", "custom"),
+                    "url": s.get("url", ""), "key_env_hint": "",
+                    "description": "自定义 MCP 服务器", "configured": True,
+                })
+            return items
         if domain == DOMAIN_SEARCH:
             return [
                 {"id": gid, "name": meta["label"], "description": meta.get("description", ""),
@@ -166,13 +190,15 @@ class ApiConfigManager:
             for gid, meta in SEARCH_PROVIDERS.items():
                 if provider_id in meta["providers"]:
                     return meta["providers"][provider_id]
+        if domain == DOMAIN_MCP:
+            return MCP_PRESET_SERVERS.get(provider_id)
         return None
 
     # ==================== 配置 CRUD ====================
     def get_configs(self, domain: Optional[str] = None) -> dict:
         """获取配置（密钥脱敏）。domain 为空返回全量"""
         data = self._load()
-        domains = [domain] if domain else [DOMAIN_LLM, DOMAIN_VIDEO, DOMAIN_SEARCH]
+        domains = [domain] if domain else [DOMAIN_LLM, DOMAIN_VIDEO, DOMAIN_SEARCH, DOMAIN_MCP]
         result = {}
         for d in domains:
             result[d] = {}
@@ -180,6 +206,10 @@ class ApiConfigManager:
                 # 搜索源结构特殊，单独处理
                 for gid, cfg in data.get(d, {}).items():
                     result[d][gid] = self._mask_search_cfg(cfg)
+                continue
+            if d == DOMAIN_MCP:
+                # MCP 域：servers 子结构
+                result[d] = {"servers": self.get_mcp_servers()}
                 continue
             for pid, cfg in data.get(d, {}).items():
                 masked = dict(cfg)
@@ -219,6 +249,8 @@ class ApiConfigManager:
         """保存/更新配置（增量合并，保留原密钥除非传入新值）"""
         if domain == DOMAIN_SEARCH:
             return self._save_search(provider_id, payload)
+        if domain == DOMAIN_MCP:
+            return self._save_mcp(provider_id, payload)
 
         tpl = self.get_provider_template(domain, provider_id)
         if not tpl:
@@ -348,7 +380,83 @@ class ApiConfigManager:
             out["providers"][pid] = entry
         return out
 
+    # ==================== MCP 域（通用服务器配置） ====================
+    def _save_mcp(self, server_id: str, payload: dict) -> dict:
+        """保存/新增 MCP 服务器（增量合并，空 key 保留旧值）
+        payload: {name, url, api_key, enabled, kind}
+        """
+        server_id = (server_id or "").strip()
+        if not server_id:
+            raise ValueError("MCP 服务器 ID 不能为空")
+        with self._lock:
+            data = self._load()
+            mcp_data = data.setdefault(DOMAIN_MCP, {})
+            servers = mcp_data.setdefault("servers", {})
+            existing = servers.get(server_id, {})
+
+            # 预设填充默认
+            preset = MCP_PRESET_SERVERS.get(server_id, {})
+            name = (payload.get("name") or existing.get("name")
+                    or preset.get("name") or server_id).strip()
+            url = (payload.get("url") or existing.get("url") or preset.get("url", "")).strip()
+            kind = (payload.get("kind") or existing.get("kind") or preset.get("kind", "custom")).strip()
+            enabled = bool(payload.get("enabled", existing.get("enabled", True)))
+
+            entry = {
+                "name": name,
+                "url": url,
+                "enabled": enabled,
+                "kind": kind,
+                "updated_at": datetime.now().isoformat(),
+            }
+            new_key = (payload.get("api_key") or "").strip()
+            if new_key:
+                entry["api_key"] = new_key
+            elif existing.get("api_key"):
+                entry["api_key"] = existing["api_key"]
+
+            servers[server_id] = entry
+            self._save(data)
+
+        log_collector.info(EVENT_CONFIG, f"MCP 服务器已保存: {server_id} ({name})", {
+            "domain": DOMAIN_MCP, "server": server_id, "kind": kind,
+        })
+        return self._mask_mcp_server(entry)
+
+    @staticmethod
+    def _mask_mcp_server(srv: dict) -> dict:
+        out = {k: v for k, v in srv.items() if k != "api_key"}
+        if srv.get("api_key"):
+            out["api_key_masked"] = ApiConfigManager._mask_key(srv["api_key"])
+        return out
+    def get_mcp_servers(self) -> dict:
+        """获取全部 MCP 服务器（脱敏）"""
+        data = self._load()
+        servers = data.get(DOMAIN_MCP, {}).get("servers", {})
+        return {sid: self._mask_mcp_server(s) for sid, s in servers.items()}
+
+    def get_mcp_server(self, server_id: str) -> Optional[dict]:
+        """获取单个 MCP 服务器（含明文 api_key）"""
+        data = self._load()
+        return data.get(DOMAIN_MCP, {}).get("servers", {}).get(server_id)
+
+    def get_enabled_mcp_servers(self) -> list:
+        """返回所有 enabled 的 MCP 服务器 [{id, name, url, api_key, kind}, ...]"""
+        data = self._load()
+        servers = data.get(DOMAIN_MCP, {}).get("servers", {})
+        return [{"id": sid, **s} for sid, s in servers.items() if s.get("enabled") and s.get("url")]
+
     def delete_config(self, domain: str, provider_id: str) -> bool:
+        if domain == DOMAIN_MCP:
+            with self._lock:
+                data = self._load()
+                servers = data.get(DOMAIN_MCP, {}).get("servers", {})
+                if provider_id in servers:
+                    del servers[provider_id]
+                    self._save(data)
+                    log_collector.warn(EVENT_CONFIG, f"MCP 服务器已删除: {provider_id}")
+                    return True
+                return False
         with self._lock:
             data = self._load()
             domain_cfg = data.get(domain, {})
@@ -371,8 +479,8 @@ class ApiConfigManager:
         当 payload 传入时（前端表单测试），缺失字段（api_key/base_url/endpoint/model）会从
         已保存配置补全——避免前端脱敏空 key 导致测试永远失败
         """
-        # search 域的 provider_id 是 group id（search_api/search_mcp），不走模板检查
-        if domain != DOMAIN_SEARCH:
+        # search/mcp 域的 provider_id 是 group/server id，不走模板检查
+        if domain not in (DOMAIN_SEARCH, DOMAIN_MCP):
             tpl = self.get_provider_template(domain, provider_id)
             if not tpl:
                 return {"ok": False, "error": f"不支持的提供商: {provider_id}"}
@@ -396,7 +504,43 @@ class ApiConfigManager:
             return await self._test_video(provider_id, tpl, cfg)
         if domain == DOMAIN_SEARCH:
             return await self._test_search(provider_id, payload or {}, cfg)
+        if domain == DOMAIN_MCP:
+            return await self._test_mcp(provider_id, payload or {}, cfg)
         return {"ok": False, "error": f"未知域: {domain}"}
+
+    async def _test_mcp(self, server_id: str, payload: dict, cfg: dict) -> dict:
+        """测试 MCP 服务器：HTTP 端点探针（4xx 视为端点可达）
+        payload 为前端表单（明文 api_key）；cfg 为补全后配置（含持久化明文 key + 预设默认）
+        """
+        preset = MCP_PRESET_SERVERS.get(server_id, {})
+        persisted = self.get_mcp_server(server_id) or {}
+        url = (payload.get("url") or persisted.get("url") or preset.get("url", "")).strip()
+        api_key = (payload.get("api_key") or persisted.get("api_key") or "").strip()
+        if not url:
+            return {"ok": False, "error": "缺少 MCP 服务器 URL"}
+        if not api_key and preset.get("key_env_hint"):
+            # 预设服务器需要 key（env 兜底）
+            import os as _os
+            env_key = _os.environ.get(preset["key_env_hint"], "").strip()
+            api_key = api_key or env_key
+        headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
+        try:
+            start = time.time()
+            async with httpx.AsyncClient(timeout=10) as client:
+                resp = await client.get(url, headers=headers)
+            latency = round((time.time() - start) * 1000)
+            if resp.status_code in (200, 401, 403, 405, 415):
+                if resp.status_code == 401:
+                    return {"ok": False, "status_code": 401, "latency_ms": latency,
+                            "error": "端点可达但鉴权失败（请检查 API Key）"}
+                return {"ok": True, "status_code": resp.status_code, "latency_ms": latency,
+                        "message": f"端点可达（{server_id}）"}
+            return {"ok": False, "status_code": resp.status_code, "latency_ms": latency,
+                    "error": f"端点返回 HTTP {resp.status_code}: {resp.text[:150]}"}
+        except httpx.HTTPError as e:
+            return {"ok": False, "error": f"网络错误: {str(e)[:200]}"}
+        except Exception as e:
+            return {"ok": False, "error": f"测试失败: {str(e)[:200]}"}
 
     async def _test_search(self, group_id: str, payload: dict, cfg: dict) -> dict:
         """测试搜索源：HTTP GET 端点 + Bearer auth 探测
@@ -454,10 +598,31 @@ class ApiConfigManager:
         """获取搜索源 group 持久化配置（含明文 api_key），供 search_api/search_mcp 读取
         返回 None 表示该 group 未在 WebUI 配置（让调用方回退到 env 变量）
         """
-        if group_id not in SEARCH_PROVIDERS:
-            return None
-        data = self._load()
-        return data.get(DOMAIN_SEARCH, {}).get(group_id)
+        if group_id == "search_api":
+            data = self._load()
+            return data.get(DOMAIN_SEARCH, {}).get("search_api")
+        if group_id == "search_mcp":
+            # 兼容旧版：search_mcp 已迁移到 MCP 独立域
+            # 返回 {enabled, provider, providers: {sid: {url, api_key}}} 映射结构
+            spec_cfg = (settings.websearch or {}).get("search_mcp") or {}
+            spec_pid = (spec_cfg.get("provider") or "").strip()
+            servers = self.get_enabled_mcp_servers()
+            if not servers:
+                return None
+            # 选 spec 指定 server 或第一个 kind=search 的 server
+            chosen = None
+            if spec_pid:
+                chosen = next((s for s in servers if s["id"] == spec_pid), None)
+            if not chosen:
+                chosen = next((s for s in servers if s.get("kind") == "search"), None)
+            if not chosen:
+                chosen = servers[0]
+            return {
+                "enabled": True,
+                "provider": chosen["id"],
+                "providers": {chosen["id"]: {"url": chosen.get("url", ""), "api_key": chosen.get("api_key", "")}},
+            }
+        return None
 
     async def _test_llm(self, provider_id: str, tpl: dict, cfg: dict) -> dict:
         api_key = cfg.get("api_key") or ""

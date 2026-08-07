@@ -49,13 +49,15 @@ createApp({
 
     async function loadProviders() {
       try {
-        const [llm, vid, srch] = await Promise.all([
+        const [llm, vid, srch, mcp] = await Promise.all([
           fetch("/api/apiconfig/providers?domain=llm").then(r => r.json()),
           fetch("/api/apiconfig/providers?domain=video").then(r => r.json()),
           fetch("/api/apiconfig/providers?domain=search").then(r => r.json()),
+          fetch("/api/apiconfig/providers?domain=mcp").then(r => r.json()),
         ]);
         llmProviders.value = llm.providers || [];
         videoProviders.value = vid.providers || [];
+        mcpPresets.value = mcp.providers || [];
         // search domain 特殊结构：返回 [{id: group_id, providers: {...}}, ...]
         const meta = { search_api: {}, search_mcp: {} };
         for (const g of srch.providers || []) {
@@ -69,8 +71,9 @@ createApp({
       try {
         savedConfigs.value = await (await fetch("/api/apiconfig")).json();
         loadSearchForm();  // 同步搜索源表单（即使不在 search tab 也确保表单初始化）
+        loadMcpServers();  // 同步 MCP 服务器列表
       } catch (e) {
-        savedConfigs.value = { llm: {}, video: {}, search: {} };
+        savedConfigs.value = { llm: {}, video: {}, search: {}, mcp: {} };
       }
     }
 
@@ -80,7 +83,9 @@ createApp({
       const s = savedConfigs.value.search || {};
       return Object.values(s).filter(g => g && g.enabled && g.provider).length;
     });
-    const configuredProviderCount = computed(() => configuredLlmCount.value + configuredVideoCount.value + configuredSearchCount.value);
+    const mcpServerCount = computed(() => Object.keys(mcpServers.value || {}).length);
+    const configuredProviderCount = computed(() =>
+      configuredLlmCount.value + configuredVideoCount.value + configuredSearchCount.value + mcpServerCount.value);
 
     // 当前 LLM 是否支持视觉（用于解析页引导）
     const healthLLMVision = computed(() => {
@@ -196,12 +201,143 @@ createApp({
     }
 
     // 搜索源配置 state
+    // ===== MCP 服务器 state（独立顶层域） =====
+    const mcpServers = ref({});          // {sid: {name, url, api_key_masked, enabled, kind}}
+    const mcpEdit = reactive({});        // {sid: {name, url, api_key}}
+    const mcpPresets = ref([]);          // 预设服务器（list_providers mcp）
+    const mcpAddPreset = ref("");
+
+    function loadMcpServers() {
+      const m = (savedConfigs.value.mcp && savedConfigs.value.mcp.servers) || {};
+      mcpServers.value = m;
+      // 同步编辑表单（key 字段保持空）
+      for (const sid of Object.keys(m)) {
+        if (!mcpEdit[sid]) mcpEdit[sid] = { name: "", url: "", api_key: "" };
+        mcpEdit[sid].name = m[sid].name || sid;
+        mcpEdit[sid].url = m[sid].url || "";
+        mcpEdit[sid].api_key = "";
+      }
+      // 移除已删除服务器的编辑条目
+      for (const sid of Object.keys(mcpEdit)) {
+        if (!(sid in m)) delete mcpEdit[sid];
+      }
+    }
+
+    function mcpServerPresetEnv(sid) {
+      const p = mcpPresets.value.find(x => x.id === sid);
+      return p ? p.key_env_hint || "" : "";
+    }
+
+    async function addMcpServer() {
+      // 从预设下拉添加（未选预设则不动作）
+      const sid = mcpAddPreset.value;
+      if (!sid) return;
+      if (mcpServers.value[sid]) { alert("该预设服务器已存在"); mcpAddPreset.value = ""; return; }
+      const preset = mcpPresets.value.find(p => p.id === sid);
+      mcpEdit[sid] = {
+        name: preset ? preset.name : sid,
+        url: preset ? preset.url : "",
+        api_key: "",
+      };
+      mcpAddPreset.value = "";
+      // 直接进入保存（空对象先显示编辑表单）
+      mcpServers.value = { ...mcpServers.value, [sid]: { name: mcpEdit[sid].name, url: mcpEdit[sid].url, enabled: true, kind: preset?.kind || "custom" } };
+      await saveMcpServer(sid);
+    }
+
+    async function addCustomMcpServer() {
+      // 添加自定义服务器（独立于预设下拉）
+      const sid = "custom_" + Date.now().toString(36);
+      mcpEdit[sid] = { name: "新 MCP 服务器", url: "", api_key: "" };
+      mcpServers.value = { ...mcpServers.value, [sid]: { name: mcpEdit[sid].name, url: "", enabled: true, kind: "custom" } };
+      await saveMcpServer(sid);
+    }
+
+    async function saveMcpServer(sid) {
+      saving.value = true;
+      testTarget.value = "mcp:" + sid;
+      const preset = mcpPresets.value.find(p => p.id === sid);
+      try {
+        const payload = {
+          name: mcpEdit[sid]?.name || sid,
+          url: mcpEdit[sid]?.url || "",
+          api_key: mcpEdit[sid]?.api_key || "",
+          enabled: mcpServers.value[sid]?.enabled !== false,
+          kind: preset?.kind || "custom",
+        };
+        const res = await fetch(`/api/apiconfig/mcp/${sid}`, {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload),
+        });
+        const d = await res.json();
+        if (d.ok) {
+          await loadApiConfigs();
+          testResult.value = { ok: true, message: "已保存" };
+        } else {
+          testResult.value = { ok: false, error: d.detail || "保存失败" };
+        }
+      } catch (e) {
+        testResult.value = { ok: false, error: "网络错误" };
+      } finally {
+        saving.value = false;
+      }
+    }
+
+    async function deleteMcpServer(sid) {
+      if (!confirm(`确定删除 MCP 服务器「${sid}」？`)) return;
+      const res = await fetch(`/api/apiconfig/mcp/${sid}`, { method: "DELETE" });
+      const d = await res.json();
+      if (d.ok) {
+        delete mcpEdit[sid];
+        await loadApiConfigs();
+      }
+    }
+
+    function toggleMcpServer(sid, e) {
+      const enabled = !!e.target.checked;
+      if (!mcpEdit[sid]) mcpEdit[sid] = { name: "", url: "", api_key: "" };
+      mcpServers.value = {
+        ...mcpServers.value,
+        [sid]: { ...(mcpServers.value[sid] || {}), enabled },
+      };
+      // 立即持久化
+      const preset = mcpPresets.value.find(p => p.id === sid);
+      fetch(`/api/apiconfig/mcp/${sid}`, {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          name: mcpEdit[sid].name || mcpServers.value[sid]?.name || sid,
+          url: mcpEdit[sid].url || mcpServers.value[sid]?.url || "",
+          api_key: mcpEdit[sid].api_key || "",
+          enabled,
+          kind: preset?.kind || mcpServers.value[sid]?.kind || "custom",
+        }),
+      });
+    }
+
+    async function testMcpServer(sid) {
+      testing.value = true;
+      testResult.value = null;
+      testTarget.value = "mcp:" + sid;
+      try {
+        const res = await fetch(`/api/apiconfig/mcp/${sid}/test`, {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            url: mcpEdit[sid]?.url || "",
+            api_key: mcpEdit[sid]?.api_key || "",
+          }),
+        });
+        testResult.value = await res.json();
+      } catch (e) {
+        testResult.value = { ok: false, error: "网络错误" };
+      } finally {
+        testing.value = false;
+      }
+    }
+
+    // ===== 搜索源 state（仅 search_api；MCP 已独立） =====
     const searchForm = reactive({
       search_api: {
-        enabled: false, provider: "", providers: {},  // providers[pid] = {base_url, api_key, url}
-      },
-      search_mcp: {
-        enabled: false, provider: "", providers: {},
+        enabled: false, provider: "", providers: {},  // providers[pid] = {base_url, api_key}
       },
     });
     const testTarget = ref(null);  // 用于搜索源测试结果定位（testResult 共享）
@@ -217,7 +353,6 @@ createApp({
         const meta = spm(gid, pid);
         form[gid].providers[pid] = {
           base_url: meta.base_url_default || "",
-          url: meta.url_default || "",
           api_key: "",
         };
       }
@@ -226,12 +361,10 @@ createApp({
 
     // provider 切换时立即创建 providers 条目（immediate 确保渲染前已就绪）
     watch(() => searchForm.search_api.provider, (pid) => { if (pid) _ensureProviderForm(searchForm, "search_api", pid); }, { immediate: true });
-    watch(() => searchForm.search_mcp.provider, (pid) => { if (pid) _ensureProviderForm(searchForm, "search_mcp", pid); }, { immediate: true });
 
     function buildEmptySearchForm() {
       return {
         search_api: { enabled: false, provider: "", providers: {} },
-        search_mcp: { enabled: false, provider: "", providers: {} },
       };
     }
 
@@ -239,28 +372,23 @@ createApp({
     function loadSearchForm() {
       const empty = buildEmptySearchForm();
       const s = savedConfigs.value.search || {};
-      for (const gid of ["search_api", "search_mcp"]) {
-        const cfg = s[gid];
-        if (cfg) {
-          empty[gid].enabled = !!cfg.enabled;
-          empty[gid].provider = cfg.provider || "";
-          empty[gid].providers = {};
-          for (const pid of Object.keys(cfg.providers || {})) {
-            const persisted = cfg.providers[pid] || {};
-            empty[gid].providers[pid] = {
-              base_url: persisted.base_url || "",
-              url: persisted.url || "",
-              api_key: "",  // api_key 永远从空开始（脱敏显示 placeholder）
-            };
-          }
+      const cfg = s["search_api"];
+      if (cfg) {
+        empty.search_api.enabled = !!cfg.enabled;
+        empty.search_api.provider = cfg.provider || "";
+        empty.search_api.providers = {};
+        for (const pid of Object.keys(cfg.providers || {})) {
+          const persisted = cfg.providers[pid] || {};
+          empty.search_api.providers[pid] = {
+            base_url: persisted.base_url || "",
+            api_key: "",  // api_key 永远从空开始（脱敏显示 placeholder）
+          };
         }
       }
       // 浅拷贝赋值
       searchForm.search_api = empty.search_api;
-      searchForm.search_mcp = empty.search_mcp;
       // 兜底：若已选 provider 但条目缺失（老数据/异常），立即创建
       if (searchForm.search_api.provider) _ensureProviderForm(searchForm, "search_api", searchForm.search_api.provider);
-      if (searchForm.search_mcp.provider) _ensureProviderForm(searchForm, "search_mcp", searchForm.search_mcp.provider);
     }
 
     function searchKeyHint(gid, pid) {
@@ -334,6 +462,7 @@ createApp({
       testResult.value = null;
       testTarget.value = null;
       if (domain === "search") loadSearchForm();
+      if (domain === "mcp") loadMcpServers();
     }
 
     // ===== 素材生成（创意方案 + 视频统一） =====
@@ -1228,14 +1357,17 @@ createApp({
       generateCreatives, selectStyleByName, goGenerate,
       videoForm, videoGenerating, videoTask, recentVideoTasks, videoProviderMeta,
       onVideoProviderSelect, generateVideo, viewTask,
-      // API 配置（三域：llm/video/search）
+      // API 配置（四域：llm/video/search/mcp）
       llmProviders, videoProviders, searchProvidersMeta, savedConfigs,
-      configuredLlmCount, configuredVideoCount, configuredSearchCount, configuredProviderCount, healthLLMVision,
+      configuredLlmCount, configuredVideoCount, configuredSearchCount, mcpServerCount, configuredProviderCount, healthLLMVision,
       configDomain, configForm, editingProvider, editingProviderName, savedKeyHint,
       activeProviders, activeConfigs, activeProviderMeta, testing, saving, testResult, testTarget,
       switchConfigDomain, onProviderSelect, editConfig, testConnection, saveConfig, deleteConfig,
       // 搜索源配置
       searchForm, spm, saveSearchConfig, testSearchConnection, searchKeyHint,
+      // MCP 服务器配置
+      mcpServers, mcpEdit, mcpPresets, mcpAddPreset, mcpServerPresetEnv,
+      addMcpServer, addCustomMcpServer, saveMcpServer, deleteMcpServer, toggleMcpServer, testMcpServer,
       wfInput, wfDragOver, wfFile, wfRunning, wfResult, wfStep, wfSteps, wfStepState, handleWfDrop, runWorkflow,
       // 广告账户审计
       auditCsvInput, auditMeta, auditSummary, auditTrend, auditAccounts, auditAnomalies,

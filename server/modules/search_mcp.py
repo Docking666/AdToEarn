@@ -21,44 +21,40 @@ from .app_logger import log_collector, EVENT_SCRAPER
 
 
 class McpSearchService:
-    """MCP 搜索客户端服务"""
+    """MCP 搜索客户端服务（从 MCP 独立域读取服务器配置）"""
 
     def _cfg(self) -> dict:
         return (settings.websearch or {}).get("search_mcp") or {}
 
-    def _persisted(self) -> dict:
-        """从 api_config_manager 读 WebUI 持久化配置"""
+    def _servers(self) -> list:
+        """从 api_config_manager MCP 域读取 enabled 服务器 [{id, name, url, api_key, kind}, ...]"""
         try:
             from .api_config import api_config_manager
-            return api_config_manager.get_search_persisted_config("search_mcp") or {}
+            return api_config_manager.get_enabled_mcp_servers() or []
         except Exception:
-            return {}
-
-    def _resolved(self, pid: str) -> dict:
-        """合并持久化 + spec：返回 {api_key, url}（持久化优先）"""
-        spec_cfg = (self._cfg().get(pid) or {})
-        persisted_cfg = (self._persisted().get("providers") or {}).get(pid, {})
-        url = (persisted_cfg.get("url") or spec_cfg.get("url", "")).strip()
-        api_key = (persisted_cfg.get("api_key") or "").strip() or (
-            os.environ.get(spec_cfg.get("api_key_env", ""), "").strip()
-            if spec_cfg.get("api_key_env") else ""
-        )
-        return {"api_key": api_key, "url": url, "env_hint": spec_cfg.get("api_key_env", "")}
+            return []
 
     def provider_id(self) -> str:
-        # 持久化 enabled=false → 当作未启用
-        if self._persisted() and not self._persisted().get("enabled", True):
+        """选择用于搜索的 MCP 服务器：
+        1. spec websearch.search_mcp.provider 指定的 server id
+        2. 第一个 kind=search 的服务器
+        3. 第一个可用服务器
+        """
+        servers = self._servers()
+        if not servers:
             return ""
-        persisted_pid = (self._persisted().get("provider") or "").strip()
-        if persisted_pid:
-            return persisted_pid
-        return self._cfg().get("provider", "") or ""
+        spec_pid = (self._cfg().get("provider") or "").strip()
+        if spec_pid:
+            for s in servers:
+                if s["id"] == spec_pid:
+                    return s["id"]
+        for s in servers:
+            if s.get("kind") == "search":
+                return s["id"]
+        return servers[0]["id"]
 
     def available(self) -> bool:
-        pid = self.provider_id()
-        if not pid:
-            return False
-        return bool(self._resolved(pid).get("url"))
+        return bool(self.provider_id())
 
     async def search(self, query: str, days: int = 7, max_results: int = 10) -> dict:
         """统一搜索入口（异步，带超时）"""
@@ -85,12 +81,19 @@ class McpSearchService:
         from mcp import ClientSession
         from mcp.client.streamable_http import streamable_http_client
 
-        resolved = self._resolved(pid)
-        url = resolved["url"]
-        key = resolved["api_key"]
+        server = None
+        for s in self._servers():
+            if s["id"] == pid:
+                server = s
+                break
+        if server is None:
+            return {"status": "not_configured", "sources": [], "total": 0,
+                    "error": f"MCP 服务器「{pid}」不存在或未启用，请在「API 配置 → MCP 服务器」检查"}
+        url = (server.get("url") or "").strip()
+        key = (server.get("api_key") or "").strip()
         if not url:
             return {"status": "not_configured", "sources": [], "total": 0,
-                    "error": f"MCP 搜索源（{pid}）未配置 URL（请在「API 配置 → 搜索源」配置或设置 spec 默认值）"}
+                    "error": f"MCP 服务器「{pid}」未配置 URL"}
         headers = {"Authorization": f"Bearer {key}"} if key else {}
 
         async with streamable_http_client(url, headers=headers) as (read, write, _):

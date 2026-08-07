@@ -447,8 +447,11 @@
                     <button class="tab-btn" :class="{ active: configDomain === 'search' }" @click="switchConfigDomain('search')">
                         搜索源 <span class="tab-count" :class="{ on: configuredSearchCount > 0 }">{{ configuredSearchCount }}</span>
                     </button>
+                    <button class="tab-btn" :class="{ active: configDomain === 'mcp' }" @click="switchConfigDomain('mcp')">
+                        MCP 服务器 <span class="tab-count" :class="{ on: mcpServerCount > 0 }">{{ mcpServerCount }}</span>
+                    </button>
                 </div>
-                <!-- 搜索源专用布局（双卡片） -->
+                <!-- 搜索源专用布局（仅搜索 API 直连；MCP 已独立为顶层域） -->
                 <div v-if="configDomain === 'search'" class="search-domain-grid">
                     <div class="search-group-card">
                         <div class="search-group-head">
@@ -484,45 +487,58 @@
                         </div>
                         <p v-else class="field-hint">未选择 provider，将尝试读取环境变量 BOCHA_API_KEY / TAVILY_API_KEY（如已设置）</p>
                     </div>
-                    <div class="search-group-card">
-                        <div class="search-group-head">
-                            <h3>搜索 MCP（官方服务）</h3>
+                    <p class="search-domain-footnote">
+                        提示：WebUI 填写的密钥会持久化到 <code>config/api_config.json</code>（已加入 .gitignore）。如未启用 provider 或 WebUI 未填 key，将自动回退到环境变量。<br>
+                        MCP 搜索服务器请到「MCP 服务器」tab 配置（kind=search 的服务器自动参与联网搜索）。
+                    </p>
+                </div>
+                <!-- MCP 服务器专用布局 -->
+                <div v-else-if="configDomain === 'mcp'" class="mcp-domain">
+                    <div class="mcp-head-row">
+                        <div class="mcp-head-left">
+                            <h3>MCP 服务器（{{ mcpServerCount }}）</h3>
+                            <p class="mcp-head-desc">MCP 是通用工具协议：接入任意 MCP 服务器（搜索/数据库/浏览器等）。kind=search 的服务器自动参与联网搜索路由</p>
+                        </div>
+                        <select v-model="mcpAddPreset" class="field select" @change="addMcpServer()">
+                            <option value="">+ 添加预设服务器…</option>
+                            <option v-for="p in mcpPresets" :key="p.id" :value="p.id">{{ p.name }}</option>
+                        </select>
+                        <button class="btn" @click="addCustomMcpServer()">+ 自定义服务器</button>
+                    </div>
+                    <div v-if="!Object.keys(mcpServers).length" class="empty-state">
+                        <p>暂无 MCP 服务器。从上方选择预设（百炼/Tavily/GLM WebSearch）或添加自定义服务器</p>
+                    </div>
+                    <div v-for="(srv, sid) in mcpServers" :key="sid" class="mcp-server-card">
+                        <div class="mcp-server-head">
+                            <strong>{{ srv.name || sid }}</strong>
+                            <span class="badge" :class="srv.kind === 'search' ? '' : ''">{{ srv.kind === 'search' ? '🔍 搜索' : '🔧 工具' }}</span>
                             <label class="toggle-switch">
-                                <input type="checkbox" v-model="searchForm.search_mcp.enabled">
-                                <span>启用</span>
+                                <input type="checkbox" :checked="srv.enabled" @change="toggleMcpServer(sid, $event)">
+                                <span>{{ srv.enabled ? '已启用' : '已停用' }}</span>
                             </label>
                         </div>
-                        <p class="search-group-desc">通过 MCP 协议连接官方搜索 MCP 服务（百炼/Tavily/GLM），自动探测工具与参数；适合追求最新能力的场景</p>
-                        <label class="field-label">当前 provider</label>
-                        <select v-model="searchForm.search_mcp.provider" class="field select full">
-                            <option value="">禁用（回退到环境变量 DASHSCOPE_API_KEY / GLM_API_KEY 等）</option>
-                            <option v-for="(meta, pid) in searchProvidersMeta.search_mcp" :key="pid" :value="pid">{{ meta.name }}（{{ meta.description }}）</option>
-                        </select>
-                        <div v-if="searchForm.search_mcp.provider" class="search-provider-detail">
-                            <label class="field-label">{{ spm('search_mcp', searchForm.search_mcp.provider).name }} MCP URL</label>
-                            <input v-model="searchForm.search_mcp.providers[searchForm.search_mcp.provider].url"
-                                   class="field input full" :placeholder="spm('search_mcp', searchForm.search_mcp.provider).url_default">
-                            <label class="field-label">API Key</label>
-                            <input v-model="searchForm.search_mcp.providers[searchForm.search_mcp.provider].api_key"
-                                   type="password" class="field input full"
-                                   :placeholder="searchKeyHint('search_mcp', searchForm.search_mcp.provider)">
+                        <div class="mcp-server-fields">
+                            <label class="field-label">服务器名称</label>
+                            <input v-model="mcpEdit[sid].name" class="field input full">
+                            <label class="field-label">MCP 端点 URL</label>
+                            <input v-model="mcpEdit[sid].url" class="field input full" placeholder="https://…/mcp">
+                            <label class="field-label">API Key（可留空）</label>
+                            <input v-model="mcpEdit[sid].api_key" type="password" class="field input full"
+                                   :placeholder="mcpServers[sid].api_key_masked ? `已保存密钥 ${mcpServers[sid].api_key_masked}（留空保持不变）` : '输入 API Key（或使用环境变量）'">
                             <div class="form-actions">
-                                <button class="btn" :disabled="testing" @click="testSearchConnection('search_mcp')">{{ testing ? '测试中…' : '测试连接' }}</button>
-                                <button class="btn primary" :disabled="saving" @click="saveSearchConfig('search_mcp')">{{ saving ? '保存中…' : '保存配置' }}</button>
+                                <button class="btn" :disabled="testing" @click="testMcpServer(sid)">{{ testing ? '测试中…' : '测试连接' }}</button>
+                                <button class="btn primary" :disabled="saving" @click="saveMcpServer(sid)">{{ saving ? '保存中…' : '保存' }}</button>
+                                <button class="btn small danger" @click="deleteMcpServer(sid)">删除</button>
                             </div>
-                            <div v-if="testResult && testTarget === 'search_mcp'" class="test-result" :class="testResult.ok ? 'ok' : 'fail'">
+                            <div v-if="testResult && testTarget === 'mcp:' + sid" class="test-result" :class="testResult.ok ? 'ok' : 'fail'">
                                 <span v-if="testResult.ok">✓ {{ testResult.message || '连接成功' }}{{ testResult.latency_ms ? '（' + testResult.latency_ms + 'ms）' : '' }}</span>
                                 <span v-else>✗ {{ testResult.error }}</span>
                             </div>
-                            <p class="env-hint">环境变量兜底：<span class="mono">{{ spm('search_mcp', searchForm.search_mcp.provider).key_env_hint }}</span></p>
+                            <p v-if="mcpServerPresetEnv(sid)" class="env-hint">预设环境变量兜底：<span class="mono">{{ mcpServerPresetEnv(sid) }}</span></p>
                         </div>
-                        <p v-else class="field-hint">未选择 provider，将尝试读取环境变量 DASHSCOPE_API_KEY / TAVILY_MCP_API_KEY / GLM_API_KEY（如已设置）</p>
                     </div>
-                    <p class="search-domain-footnote">
-                        提示：WebUI 填写的密钥会持久化到 <code>config/api_config.json</code>（已加入 .gitignore）。如未启用 provider 或 WebUI 未填 key，将自动回退到环境变量
-                    </p>
                 </div>
-                <!-- LLM/视频原表单（search 域时隐藏） -->
+                <!-- LLM/视频原表单（search/mcp 域时隐藏） -->
                 <div v-else class="apiconfig-grid">
                     <div class="apiconfig-form">
                         <h3>{{ editingProvider ? '编辑: ' + editingProviderName : '新增 ' + (configDomain === 'llm' ? '大模型' : '视频') + ' API 配置' }}</h3>
