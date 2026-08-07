@@ -201,6 +201,9 @@ body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC"
 .search-source-item { background: var(--bg); border: 1px solid var(--border); border-radius: 10px; padding: 12px 14px; margin-bottom: 8px; }
 .search-source-title { font-size: 14px; font-weight: 500; color: var(--acc2); text-decoration: none; word-break: break-all; }
 .search-source-title:hover { text-decoration: underline; }
+/* 无 URL 的摘要条（如 DeepSeek native 返回的 AI 摘要）：普通文本样式，不可点击 */
+.search-source-title.no-link { color: var(--text1); cursor: default; }
+.search-source-title.no-link:hover { text-decoration: none; }
 .search-source-snippet { font-size: 12px; color: var(--text2); margin: 6px 0; line-height: 1.6; }
 .search-source-meta { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; font-size: 11px; }
 .tag-chip { background: var(--bg4); color: var(--text2); padding: 2px 8px; border-radius: 8px; }

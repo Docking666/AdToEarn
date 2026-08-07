@@ -146,6 +146,38 @@ websearch:
   retry_base_delay_ms: 2000
   # 成本熔断（美元，进程内累计，达阈值后拒绝新请求）
   daily_budget_usd: 5.0
+  # 搜索源路由模式: auto | native | api | mcp
+  #   native: 用模型原生 web_search 工具 (openai/anthropic/google/azure/glm/deepseek-v4-flash)
+  #   api:    直连第三方搜索 HTTP API (博查 Bocha / Tavily)，适用于不支持原生 web_search 的模型 (deepseek-chat/qwen 等)
+  #   mcp:    内嵌 MCP 客户端连官方搜索 MCP 服务 (阿里百炼 / Tavily / GLM WebSearch Prime)
+  #   auto:   native 优先 → api → mcp（默认）
+  mode: "auto"
+  # ---- API 直连搜索源 ----
+  # 密钥从环境变量读取（api_key_env 指定的变量名），避免写入仓库
+  search_api:
+    # 启用的 provider: bocha | tavily | ""（空=禁用 API 直连）
+    provider: ""
+    bocha:
+      api_key_env: "BOCHA_API_KEY"
+      base_url: "https://api.bochaai.com/v1/web-search"
+    tavily:
+      api_key_env: "TAVILY_API_KEY"
+      base_url: "https://api.tavily.com/search"
+  # ---- MCP 搜索源 ----
+  search_mcp:
+    # 启用的 provider: bailian | tavily | glm | ""（空=禁用 MCP 搜索）
+    provider: ""
+    # MCP 服务超时（秒）
+    timeout: 30
+    bailian:
+      url: "https://dashscope.aliyuncs.com/api/v1/mcps/WebSearch/mcp"
+      api_key_env: "DASHSCOPE_API_KEY"
+    tavily:
+      url: "https://mcp.tavily.com/mcp"
+      api_key_env: "TAVILY_MCP_API_KEY"
+    glm:
+      url: "https://open.bigmodel.cn/api/mcp/web_search_prime/mcp"
+      api_key_env: "GLM_API_KEY"
 
 # ------------------------------------------------------------
 # 素材风格模板 (迁移生成的目标风格)
@@ -584,7 +616,6 @@ llm:
       vision_default_model: "gpt-4o"
       supports_vision: true
       supports_web_search: true
-      supports_web_search: true
     anthropic:
       name: "Anthropic (Claude)"
       litellm_prefix: "anthropic"
@@ -592,7 +623,6 @@ llm:
       default_model: "claude-sonnet-4-20250514"
       vision_default_model: "claude-sonnet-4-20250514"
       supports_vision: true
-      supports_web_search: true
       supports_web_search: true
     google:
       name: "Google Gemini"
@@ -602,7 +632,6 @@ llm:
       vision_default_model: "gemini-1.5-pro"
       supports_vision: true
       supports_web_search: true
-      supports_web_search: true
     azure:
       name: "Azure OpenAI"
       litellm_prefix: "azure"
@@ -611,7 +640,6 @@ llm:
       vision_default_model: "gpt-4o"
       supports_vision: true
       supports_web_search: true
-      supports_web_search: true
     deepseek:
       name: "DeepSeek"
       litellm_prefix: "deepseek"
@@ -619,6 +647,10 @@ llm:
       default_model: "deepseek-chat"
       vision_default_model: ""
       supports_vision: false
+      # Responses API 原生支持 web_search（服务端执行），仅 deepseek-v4-flash 模型可用
+      supports_web_search: true
+      web_search_note: "仅 deepseek-v4-flash 模型（Responses API）"
+      responses_api: true
     qwen:
       name: "通义千问 (DashScope)"
       litellm_prefix: "openai"
@@ -635,6 +667,9 @@ llm:
       default_model: "glm-4-flash"
       vision_default_model: "glm-4v-plus"
       supports_vision: true
+      # GLM 原生支持 web_search 工具（search_pro 引擎，中文效果好）
+      supports_web_search: true
+      web_search_note: "GLM 原生 web_search 工具（search_pro）"
       multimodal_models: ["glm-4v-plus", "glm-4v", "glm-4v-flash"]
     custom:
       name: "自定义 (OpenAI 兼容)"

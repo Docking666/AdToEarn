@@ -133,7 +133,8 @@
                     <!-- 联网搜索来源卡片 -->
                     <div v-if="scrapeResult.sources" class="search-sources">
                         <div v-for="(s, i) in scrapeResult.sources" :key="i" class="search-source-item">
-                            <a :href="s.url" target="_blank" class="search-source-title">{{ s.title || s.url }}</a>
+                            <a v-if="s.url" :href="s.url" target="_blank" class="search-source-title">{{ s.title || s.url }}</a>
+                            <span v-else class="search-source-title no-link">{{ s.title || '搜索结果摘要' }}</span>
                             <div v-if="s.snippet" class="search-source-snippet">{{ s.snippet }}</div>
                             <div class="search-source-meta">
                                 <span v-if="s.platform" class="tag-chip">{{ s.platform }}</span>
