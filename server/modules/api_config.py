@@ -24,6 +24,9 @@ DOMAIN_VIDEO = "video"
 DOMAIN_SEARCH = "search"
 DOMAIN_MCP = "mcp"
 
+# 敏感 Header 键名（脱敏判断，Phase9）
+_SENSITIVE_HEADER_KEYS = ("key", "token", "secret", "auth", "password", "credential")
+
 # MCP 预设服务器（前端「添加预设」一键填充；kind=search 的服务器参与联网搜索路由）
 MCP_PRESET_SERVERS = {
     "bailian_websearch": {
@@ -414,6 +417,16 @@ class ApiConfigManager:
                 entry["api_key"] = new_key
             elif existing.get("api_key"):
                 entry["api_key"] = existing["api_key"]
+            # 自定义 Headers（任意 k:v 请求头；空 dict 删除）
+            new_headers = payload.get("headers")
+            if isinstance(new_headers, dict):
+                clean = {str(k).strip(): str(v).strip() for k, v in new_headers.items() if str(k).strip()}
+                if clean:
+                    entry["headers"] = clean
+                else:
+                    entry.pop("headers", None)
+            elif existing.get("headers"):
+                entry["headers"] = existing["headers"]
 
             servers[server_id] = entry
             self._save(data)
@@ -428,6 +441,15 @@ class ApiConfigManager:
         out = {k: v for k, v in srv.items() if k != "api_key"}
         if srv.get("api_key"):
             out["api_key_masked"] = ApiConfigManager._mask_key(srv["api_key"])
+        # Headers 脱敏：键名含敏感词或值以 sk-/Bearer 开头 → 掩码
+        if srv.get("headers"):
+            masked_headers = {}
+            for k, v in srv["headers"].items():
+                low_key = k.lower()
+                is_sensitive = any(t in low_key for t in _SENSITIVE_HEADER_KEYS) or \
+                    str(v).lower().startswith(("sk-", "bearer "))
+                masked_headers[k] = ApiConfigManager._mask_key(str(v)) if is_sensitive else str(v)
+            out["headers_masked"] = masked_headers
         return out
     def get_mcp_servers(self) -> dict:
         """获取全部 MCP 服务器（脱敏）"""

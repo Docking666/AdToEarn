@@ -79,7 +79,7 @@ class McpSearchService:
     # ==================== 内部实现 ====================
     async def _call(self, pid: str, query: str, count: int) -> dict:
         from mcp import ClientSession
-        from mcp.client.streamable_http import streamable_http_client
+        from mcp.client.streamable_http import streamable_http_client, create_mcp_http_client
 
         server = None
         for s in self._servers():
@@ -94,23 +94,27 @@ class McpSearchService:
         if not url:
             return {"status": "not_configured", "sources": [], "total": 0,
                     "error": f"MCP 服务器「{pid}」未配置 URL"}
+        # mcp SDK >=2.0: headers 通过 create_mcp_http_client 传入
         headers = {"Authorization": f"Bearer {key}"} if key else {}
-
-        async with streamable_http_client(url, headers=headers) as (read, write, _):
-            async with ClientSession(read, write) as session:
-                await session.initialize()
-                tools = await session.list_tools()
-                tool = self._pick_tool(tools)
-                if not tool:
-                    return {"status": "failed", "sources": [], "total": 0,
-                            "error": f"MCP 服务（{pid}）未暴露可用搜索工具"}
-                args = self._build_args(tool, query, count)
-                log_collector.info(EVENT_SCRAPER, f"MCP 搜索: {pid} 工具={tool.name} 参数={list(args.keys())}")
-                result = await session.call_tool(tool.name, arguments=args)
-                text = self._extract_text(result)
-                sources = self._parse_sources(text)
-                return {"status": "success" if sources else "no_results",
-                        "sources": sources, "total": len(sources)}
+        http_client = create_mcp_http_client(headers=headers)
+        try:
+            async with streamable_http_client(url, http_client=http_client) as (read, write, _):
+                async with ClientSession(read, write) as session:
+                    await session.initialize()
+                    tools = await session.list_tools()
+                    tool = self._pick_tool(tools)
+                    if not tool:
+                        return {"status": "failed", "sources": [], "total": 0,
+                                "error": f"MCP 服务（{pid}）未暴露可用搜索工具"}
+                    args = self._build_args(tool, query, count)
+                    log_collector.info(EVENT_SCRAPER, f"MCP 搜索: {pid} 工具={tool.name} 参数={list(args.keys())}")
+                    result = await session.call_tool(tool.name, arguments=args)
+                    text = self._extract_text(result)
+                    sources = self._parse_sources(text)
+                    return {"status": "success" if sources else "no_results",
+                            "sources": sources, "total": len(sources)}
+        finally:
+            await http_client.aclose()
 
     @staticmethod
     def _pick_tool(tools: list) -> Optional[object]:

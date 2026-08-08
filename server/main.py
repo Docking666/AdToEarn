@@ -100,6 +100,8 @@ class ApiConfigSaveRequest(BaseModel):
     aspect_ratio: str = ""
     # search 域字段（嵌套结构）
     providers: Optional[dict] = None
+    # mcp 域字段（自定义请求头，Phase9）
+    headers: Optional[dict] = None
     # 通用
     api_key: str = ""
     enabled: bool = True
@@ -116,6 +118,24 @@ class ApiTestRequest(BaseModel):
     url: str = ""
     litellm_prefix: str = ""
     base_url: str = ""
+
+
+class McpToolCallRequest(BaseModel):
+    """通用 MCP 工具调用请求（Phase9）"""
+    tool_name: str
+    arguments: dict = {}
+    headers: Optional[dict] = None  # 临时请求头（不入库，仅本次调用）
+
+
+class AuditExportRequest(BaseModel):
+    """审计业务集成请求（Phase9）：飞书推送 / 腾讯文档导出"""
+    server_id: str
+    account: Optional[str] = None
+    days: Optional[int] = None
+    title: Optional[str] = None
+    # 飞书推送参数（可省略，用服务器默认；按实际 MCP 工具定义传入）
+    receive_id: Optional[str] = None
+    receive_id_type: Optional[str] = "open_id"
 
 
 class VideoGenerateRequest(BaseModel):
@@ -439,6 +459,98 @@ async def test_api_connection(domain: str, provider_id: str, req: ApiTestRequest
     payload = req.model_dump()
     result = await api_config_manager.test_connection(domain, provider_id, payload)
     return result
+
+
+# ==================== 通用 MCP 工具调用 API（Phase9） ====================
+
+_MCP_ERROR_STATUS = {
+    "server_not_found": 404,
+    "tool_not_found": 404,
+    "invalid_arguments": 400,
+    "timeout": 504,
+    "auth_error": 502,
+    "connection_failed": 502,
+}
+
+
+@app.get("/api/mcp/{server_id}/tools")
+async def mcp_list_tools(server_id: str):
+    """列出 MCP 服务器可用工具（含参数 schema）"""
+    from .modules.mcp_tool_api import mcp_tool_api
+
+    result = await mcp_tool_api.list_tools(server_id)
+    if not result.get("ok"):
+        raise HTTPException(status_code=_MCP_ERROR_STATUS.get(result.get("error_type"), 500),
+                            detail=result.get("error", "获取工具列表失败"))
+    return result
+
+
+@app.post("/api/mcp/{server_id}/call")
+async def mcp_call_tool(server_id: str, req: McpToolCallRequest):
+    """调用 MCP 服务器上的任意工具"""
+    from .modules.mcp_tool_api import mcp_tool_api
+
+    result = await mcp_tool_api.call_tool(server_id, req.tool_name, req.arguments or {},
+                                          extra_headers=req.headers)
+    if not result.get("ok") and result.get("is_error") is not False:
+        raise HTTPException(status_code=_MCP_ERROR_STATUS.get(result.get("error_type"), 500),
+                            detail=result.get("error", "工具调用失败"))
+    return result
+
+
+# ==================== 审计业务集成（Phase9：MCP 导出） ====================
+
+@app.post("/api/audit/export/feishu")
+async def audit_export_feishu(req: AuditExportRequest):
+    """审计异常信号一键推送飞书群（调用飞书 MCP 的 send_message）"""
+    from .modules.mcp_tool_api import mcp_tool_api
+
+    server = api_config_manager.get_mcp_server(req.server_id)
+    if not server or not server.get("enabled"):
+        raise HTTPException(status_code=404,
+                            detail=f"MCP 服务器「{req.server_id}」不存在或未启用，请到「API 配置 → MCP 服务器」配置")
+    # 生成信号报告（复用 audit 模块）
+    from .modules.audit import audit_service
+
+    signals = audit_service.detect_signals()
+    medium_high = [s for s in signals if s.get("severity") in ("high", "medium")][:10]
+    if not medium_high:
+        return {"ok": False, "message": "当前无中/高风险信号，无需推送"}
+    lines = [f"## 广告账户审计 · 异常信号（{len(medium_high)} 条）", ""]
+    for s in medium_high:
+        lines.append(f"- **[{s.get('severity','').upper()}]** {s.get('account','')} · {s.get('category','')}")
+        lines.append(f"  - {s.get('impact','')}（{s.get('description','')}）")
+    content = "\n".join(lines)
+
+    result = await mcp_tool_api.call_tool(req.server_id, "send_message", {
+        "receive_id": req.receive_id or "ou_00000000",
+        "receive_id_type": req.receive_id_type or "open_id",
+        "msg_type": "text",
+        "content": content,
+    })
+    return {"ok": result.get("ok"), "tool_result": result,
+            "signals": len(medium_high), "preview": content[:300]}
+
+
+@app.post("/api/audit/export/docs")
+async def audit_export_docs(req: AuditExportRequest):
+    """审计报告导出到腾讯文档（调用腾讯文档 MCP 的 create_document）"""
+    from .modules.mcp_tool_api import mcp_tool_api
+
+    server = api_config_manager.get_mcp_server(req.server_id)
+    if not server or not server.get("enabled"):
+        raise HTTPException(status_code=404,
+                            detail=f"MCP 服务器「{req.server_id}」不存在或未启用，请到「API 配置 → MCP 服务器」配置")
+    from .modules.audit import audit_service
+
+    report = audit_service.build_report_text(req.account, req.days)
+    title = req.title or f"广告账户审计报告 {__import__('time').strftime('%Y-%m-%d')}"
+    result = await mcp_tool_api.call_tool(req.server_id, "create_document", {
+        "title": title,
+        "content": report,
+    })
+    return {"ok": result.get("ok"), "tool_result": result, "title": title,
+            "preview": report[:300]}
 
 
 # ==================== 素材生成 API（创意方案 + 视频，统一入口） ====================

@@ -450,6 +450,9 @@
                     <button class="tab-btn" :class="{ active: configDomain === 'mcp' }" @click="switchConfigDomain('mcp')">
                         MCP 服务器 <span class="tab-count" :class="{ on: mcpServerCount > 0 }">{{ mcpServerCount }}</span>
                     </button>
+                    <button class="tab-btn" :class="{ active: configDomain === 'mcptools' }" @click="switchConfigDomain('mcptools')">
+                        MCP 工具 <span class="tab-count" :class="{ on: mcpServerCount > 0 }">{{ mcpServerCount }}</span>
+                    </button>
                 </div>
                 <!-- 搜索源专用布局（仅搜索 API 直连；MCP 已独立为顶层域） -->
                 <div v-if="configDomain === 'search'" class="search-domain-grid">
@@ -525,6 +528,10 @@
                             <label class="field-label">API Key（可留空）</label>
                             <input v-model="mcpEdit[sid].api_key" type="password" class="field input full"
                                    :placeholder="mcpServers[sid].api_key_masked ? `已保存密钥 ${mcpServers[sid].api_key_masked}（留空保持不变）` : '输入 API Key（或使用环境变量）'">
+                            <label class="field-label">自定义 Headers（JSON，可选）</label>
+                            <textarea v-model="mcpEdit[sid].headers" rows="2" class="field input full mono"
+                                      placeholder='{"x-api-key": "xxx", "X-Custom": "value"}'></textarea>
+                            <p class="env-hint">如需除 Bearer 外的认证头（如 x-api-key），以 JSON 填写，保存时校验</p>
                             <div class="form-actions">
                                 <button class="btn" :disabled="testing" @click="testMcpServer(sid)">{{ testing ? '测试中…' : '测试连接' }}</button>
                                 <button class="btn primary" :disabled="saving" @click="saveMcpServer(sid)">{{ saving ? '保存中…' : '保存' }}</button>
@@ -538,7 +545,83 @@
                         </div>
                     </div>
                 </div>
-                <!-- LLM/视频原表单（search/mcp 域时隐藏） -->
+                <!-- MCP 工具专用布局（Phase9：通用工具调用） -->
+                <div v-else-if="configDomain === 'mcptools'" class="mcp-tools-domain">
+                    <div class="mcp-tools-head">
+                        <h3>MCP 工具调用</h3>
+                        <p class="mcp-head-desc">枚举任意已配置服务器的工具，按参数 schema 动态生成表单并调用。搜索类服务器也可在此调试</p>
+                        <select v-model="mcpToolsServerId" class="field select" @change="loadMcpTools()">
+                            <option value="">选择服务器…</option>
+                            <option v-for="(srv, sid) in mcpServers" :key="sid" :value="sid">{{ srv.name || sid }}{{ srv.enabled === false ? '（已停用）' : '' }}</option>
+                        </select>
+                    </div>
+                    <div v-if="!Object.keys(mcpServers).length" class="empty-state">
+                        <p>暂无 MCP 服务器，请先到「MCP 服务器」tab 添加</p>
+                    </div>
+                    <div v-else-if="mcpToolsServerId" class="mcp-tools-layout">
+                        <div class="mcp-tools-list">
+                            <div class="mcp-tools-list-head">
+                                <span>工具（{{ mcpTools.length }}）</span>
+                                <button class="btn small" :disabled="mcpToolsLoading" @click="loadMcpTools()">{{ mcpToolsLoading ? '加载中…' : '刷新' }}</button>
+                            </div>
+                            <div v-if="mcpToolsLoading" class="loading-state"><div class="spinner"></div><p>正在枚举工具…</p></div>
+                            <div v-else-if="mcpToolsError" class="test-result fail">{{ mcpToolsError }}</div>
+                            <div v-else-if="!mcpTools.length" class="empty-state"><p>该服务器未暴露任何工具</p></div>
+                            <div v-for="t in mcpTools" :key="t.name" class="mcp-tool-item"
+                                 :class="{ active: activeMcpTool && activeMcpTool.name === t.name }"
+                                 @click="selectMcpTool(t)">
+                                <strong class="mono">{{ t.name }}</strong>
+                                <p class="mcp-tool-desc">{{ t.description || '无描述' }}</p>
+                            </div>
+                        </div>
+                        <div class="mcp-tools-panel">
+                            <template v-if="activeMcpTool">
+                                <h4 class="mono">{{ activeMcpTool.name }}</h4>
+                                <p class="mcp-tool-desc">{{ activeMcpTool.description || '' }}</p>
+                                <div v-if="!mcpParamFields.length" class="field-hint">该工具无参数，可直接调用</div>
+                                <div v-for="(f, fi) in mcpParamFields" :key="fi" class="mcp-param-field">
+                                    <label class="field-label">
+                                        {{ f.label }}<span v-if="f.required" class="required-star">*</span>
+                                        <span v-if="f.type" class="param-type">{{ f.type }}</span>
+                                    </label>
+                                    <select v-if="f.kind === 'enum'" v-model="mcpArgs[f.name]" class="field select full">
+                                        <option v-for="opt in f.enum" :key="opt" :value="opt">{{ opt }}</option>
+                                    </select>
+                                    <textarea v-else-if="f.kind === 'json'" v-model="mcpArgs[f.name]" rows="3" class="field input full mono"
+                                              :placeholder="f.placeholder"></textarea>
+                                    <input v-else-if="f.kind === 'number'" v-model.number="mcpArgs[f.name]" type="number"
+                                           class="field input full" :placeholder="f.placeholder">
+                                    <label v-else-if="f.kind === 'boolean'" class="toggle-switch">
+                                        <input type="checkbox" v-model="mcpArgs[f.name]">
+                                        <span>{{ mcpArgs[f.name] ? 'true' : 'false' }}</span>
+                                    </label>
+                                    <input v-else v-model="mcpArgs[f.name]" type="text" class="field input full"
+                                           :placeholder="f.placeholder">
+                                    <p v-if="f.description" class="env-hint">{{ f.description }}</p>
+                                </div>
+                                <div class="form-actions">
+                                    <button class="btn primary" :disabled="mcpCalling" @click="callMcpTool()">
+                                        {{ mcpCalling ? '调用中…' : '▶ 调用工具' }}
+                                    </button>
+                                </div>
+                                <div v-if="mcpCallError" class="test-result fail">{{ mcpCallError }}</div>
+                                <div v-if="mcpResult !== null" class="mcp-result">
+                                    <div class="mcp-result-head">
+                                        <span class="badge" :class="mcpResult.ok ? 'success' : ''">{{ mcpResult.ok ? '✓ 成功' : '✗ 工具返回错误' }}</span>
+                                        <span class="mcp-result-size">{{ mcpResult.text ? mcpResult.text.length + ' 字符' : '' }}</span>
+                                    </div>
+                                    <pre class="mcp-result-pre">{{ mcpResult.text || '(无输出)' }}</pre>
+                                    <details v-if="mcpResult.content" class="mcp-result-detail">
+                                        <summary>原始 content（{{ mcpResult.content.length }} 段）</summary>
+                                        <pre class="mcp-result-pre">{{ JSON.stringify(mcpResult.content, null, 2) }}</pre>
+                                    </details>
+                                </div>
+                            </template>
+                            <div v-else class="empty-state"><p>左侧选择工具</p></div>
+                        </div>
+                    </div>
+                </div>
+                <!-- LLM/视频原表单（search/mcp/mcptools 域时隐藏） -->
                 <div v-else class="apiconfig-grid">
                     <div class="apiconfig-form">
                         <h3>{{ editingProvider ? '编辑: ' + editingProviderName : '新增 ' + (configDomain === 'llm' ? '大模型' : '视频') + ' API 配置' }}</h3>
@@ -670,10 +753,22 @@
                         {{ auditLoading.sample ? '生成中…' : '✨ 生成示例数据' }}
                     </button>
                     <button class="btn" :disabled="!auditMeta.record_count" @click="exportAuditExcel">📊 导出 Excel</button>
+                    <!-- Phase9: MCP 业务集成（飞书/腾讯文档） -->
+                    <select v-if="mcpServerCount" v-model="auditMcpServer" class="field select audit-mcp-select">
+                        <option value="">MCP 导出到…</option>
+                        <option v-for="(srv, sid) in mcpServers" :key="sid" :value="sid">{{ srv.name || sid }}</option>
+                    </select>
+                    <button class="btn" :disabled="!auditMeta.record_count || !auditMcpServer" @click="exportAuditFeishu">
+                        {{ auditExporting ? '推送中…' : '✈ 飞书推送' }}
+                    </button>
+                    <button class="btn" :disabled="!auditMeta.record_count || !auditMcpServer" @click="exportAuditDocs">
+                        {{ auditExporting ? '导出中…' : '📄 导出腾讯文档' }}
+                    </button>
+                    <span v-if="auditExportResult" class="badge" :class="auditExportResult.ok ? 'success' : ''">{{ auditExportResult.message }}</span>
                     <button class="btn danger" :disabled="!auditMeta.record_count" @click="clearAuditData">🗑 清空数据</button>
                     <span v-if="auditMeta.has_sample" class="badge mock">含示例数据</span>
                     <span class="audit-meta-text" v-if="auditMeta.record_count">
-                        {{ auditMeta.record_count }} 条记录 · {{ auditMeta.accounts.length }} 个账户
+                        {{ auditMeta.record_count }} 条记录 · {{ (auditMeta.accounts || []).length }} 个账户
                         <template v-if="auditMeta.date_min"> · {{ auditMeta.date_min }} ~ {{ auditMeta.date_max }}</template>
                     </span>
                 </div>
@@ -704,9 +799,9 @@
                     <!-- 健康评分 + 关键指标 -->
                     <div class="audit-health-row">
                         <div class="audit-health-card">
-                            <div class="audit-health-score" :class="'grade-' + auditSummary.health?.grade">{{ auditSummary.health?.score }}</div>
-                            <div class="audit-health-grade">健康评分 <b>{{ auditSummary.health?.grade }}</b></div>
-                            <div class="audit-health-sub">异常 {{ auditSummary.anomaly_count }} 项</div>
+                            <div class="audit-health-score" :class="'grade-' + auditSummary?.health?.grade">{{ auditSummary?.health?.score }}</div>
+                            <div class="audit-health-grade">健康评分 <b>{{ auditSummary?.health?.grade }}</b></div>
+                            <div class="audit-health-sub">异常 {{ auditSummary?.anomaly_count || 0 }} 项</div>
                         </div>
                         <div class="audit-metrics-grid">
                             <div v-for="m in auditMetricCards" :key="m.key" class="audit-metric-card" :class="m.tone">

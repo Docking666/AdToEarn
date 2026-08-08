@@ -203,19 +203,141 @@ createApp({
     // 搜索源配置 state
     // ===== MCP 服务器 state（独立顶层域） =====
     const mcpServers = ref({});          // {sid: {name, url, api_key_masked, enabled, kind}}
-    const mcpEdit = reactive({});        // {sid: {name, url, api_key}}
+    const mcpEdit = reactive({});        // {sid: {name, url, api_key, headers}}
     const mcpPresets = ref([]);          // 预设服务器（list_providers mcp）
     const mcpAddPreset = ref("");
+
+    // ===== MCP 工具调用 state（Phase9） =====
+    const mcpToolsServerId = ref("");
+    const mcpTools = ref([]);
+    const mcpToolsLoading = ref(false);
+    const mcpToolsError = ref("");
+    const activeMcpTool = ref(null);
+    const mcpParamFields = ref([]);
+    const mcpArgs = reactive({});
+    const mcpCalling = ref(false);
+    const mcpCallError = ref("");
+    const mcpResult = ref(null);
+
+    // 按 inputSchema 生成参数表单字段（string/enum/number/boolean/json 降级）
+    function buildMcpParamFields(schema) {
+      const props = (schema && schema.properties) || {};
+      const required = (schema && schema.required) || [];
+      const fields = [];
+      for (const [name, p] of Object.entries(props)) {
+        const type = p.type || "string";
+        let kind = "text";
+        if (p.enum) kind = "enum";
+        else if (type === "number" || type === "integer") kind = "number";
+        else if (type === "boolean") kind = "boolean";
+        else if (type === "array" || type === "object" || p.anyOf || p.oneOf || (type === "string" && p.contentMediaType === "application/json")) kind = "json";
+        fields.push({
+          name, label: p.title || name, type,
+          kind, required: required.includes(name),
+          enum: p.enum || [],
+          description: p.description || "",
+          placeholder: p.default !== undefined ? String(p.default) : (type === "string" ? "文本…" : ""),
+          default: p.default,
+        });
+      }
+      return fields;
+    }
+
+    async function loadMcpTools() {
+      const sid = mcpToolsServerId.value;
+      if (!sid) return;
+      mcpToolsLoading.value = true;
+      mcpToolsError.value = "";
+      mcpTools.value = [];
+      activeMcpTool.value = null;
+      mcpResult.value = null;
+      try {
+        const res = await fetch(`/api/mcp/${encodeURIComponent(sid)}/tools`);
+        const d = await res.json();
+        if (d.ok) {
+          mcpTools.value = d.tools || [];
+          if (mcpTools.value.length) selectMcpTool(mcpTools.value[0]);
+        } else {
+          mcpToolsError.value = d.detail || "枚举工具失败";
+        }
+      } catch (e) {
+        mcpToolsError.value = "网络错误";
+      } finally {
+        mcpToolsLoading.value = false;
+      }
+    }
+
+    function selectMcpTool(t) {
+      activeMcpTool.value = t;
+      mcpParamFields.value = buildMcpParamFields(t.inputSchema);
+      mcpResult.value = null;
+      mcpCallError.value = "";
+      // 清空并预填 default
+      for (const k of Object.keys(mcpArgs)) delete mcpArgs[k];
+      for (const f of mcpParamFields.value) {
+        mcpArgs[f.name] = f.default !== undefined ? f.default : (f.kind === "boolean" ? false : "");
+      }
+    }
+
+    async function callMcpTool() {
+      const sid = mcpToolsServerId.value;
+      const t = activeMcpTool.value;
+      if (!sid || !t) return;
+      // 参数类型转换：json 字段解析；空字符串去除
+      const args = {};
+      for (const f of mcpParamFields.value) {
+        const v = mcpArgs[f.name];
+        if (f.kind === "json") {
+          if (v === "" || v === undefined) continue;
+          try {
+            args[f.name] = JSON.parse(v);
+          } catch (e) {
+            mcpCallError.value = `参数「${f.name}」不是合法 JSON：${e.message}`;
+            return;
+          }
+        } else if (f.kind === "number") {
+          if (v === "" || v === undefined) continue;
+          args[f.name] = Number(v);
+        } else if (f.kind === "boolean") {
+          args[f.name] = !!v;
+        } else {
+          if (v === "" || v === undefined) continue;
+          args[f.name] = String(v);
+        }
+      }
+      mcpCalling.value = true;
+      mcpCallError.value = "";
+      mcpResult.value = null;
+      try {
+        const res = await fetch(`/api/mcp/${encodeURIComponent(sid)}/call`, {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ tool_name: t.name, arguments: args }),
+        });
+        const d = await res.json();
+        if (res.ok) {
+          mcpResult.value = d;
+        } else {
+          mcpCallError.value = d.detail || "调用失败";
+        }
+      } catch (e) {
+        mcpCallError.value = "网络错误";
+      } finally {
+        mcpCalling.value = false;
+      }
+    }
 
     function loadMcpServers() {
       const m = (savedConfigs.value.mcp && savedConfigs.value.mcp.servers) || {};
       mcpServers.value = m;
       // 同步编辑表单（key 字段保持空）
       for (const sid of Object.keys(m)) {
-        if (!mcpEdit[sid]) mcpEdit[sid] = { name: "", url: "", api_key: "" };
+        if (!mcpEdit[sid]) mcpEdit[sid] = { name: "", url: "", api_key: "", headers: "" };
         mcpEdit[sid].name = m[sid].name || sid;
         mcpEdit[sid].url = m[sid].url || "";
         mcpEdit[sid].api_key = "";
+        // headers：脱敏值转回 JSON 字符串（敏感值用掩码提示）
+        const h = m[sid].headers_masked || m[sid].headers || null;
+        mcpEdit[sid].headers = h && Object.keys(h).length ? JSON.stringify(h, null, 2) : "";
       }
       // 移除已删除服务器的编辑条目
       for (const sid of Object.keys(mcpEdit)) {
@@ -238,6 +360,7 @@ createApp({
         name: preset ? preset.name : sid,
         url: preset ? preset.url : "",
         api_key: "",
+        headers: "",
       };
       mcpAddPreset.value = "";
       // 直接进入保存（空对象先显示编辑表单）
@@ -248,7 +371,7 @@ createApp({
     async function addCustomMcpServer() {
       // 添加自定义服务器（独立于预设下拉）
       const sid = "custom_" + Date.now().toString(36);
-      mcpEdit[sid] = { name: "新 MCP 服务器", url: "", api_key: "" };
+      mcpEdit[sid] = { name: "新 MCP 服务器", url: "", api_key: "", headers: "" };
       mcpServers.value = { ...mcpServers.value, [sid]: { name: mcpEdit[sid].name, url: "", enabled: true, kind: "custom" } };
       await saveMcpServer(sid);
     }
@@ -257,11 +380,26 @@ createApp({
       saving.value = true;
       testTarget.value = "mcp:" + sid;
       const preset = mcpPresets.value.find(p => p.id === sid);
+      // 解析 Headers JSON（可留空）
+      let headers = null;
+      const headersRaw = (mcpEdit[sid]?.headers || "").trim();
+      if (headersRaw) {
+        try {
+          const parsed = JSON.parse(headersRaw);
+          if (typeof parsed !== "object" || Array.isArray(parsed)) throw new Error("须为 JSON 对象");
+          headers = parsed;
+        } catch (e) {
+          testResult.value = { ok: false, error: `Headers 不是合法 JSON 对象：${e.message}` };
+          saving.value = false;
+          return;
+        }
+      }
       try {
         const payload = {
           name: mcpEdit[sid]?.name || sid,
           url: mcpEdit[sid]?.url || "",
           api_key: mcpEdit[sid]?.api_key || "",
+          headers: headers || {},
           enabled: mcpServers.value[sid]?.enabled !== false,
           kind: preset?.kind || "custom",
         };
@@ -308,6 +446,7 @@ createApp({
           name: mcpEdit[sid].name || mcpServers.value[sid]?.name || sid,
           url: mcpEdit[sid].url || mcpServers.value[sid]?.url || "",
           api_key: mcpEdit[sid].api_key || "",
+          headers: {},
           enabled,
           kind: preset?.kind || mcpServers.value[sid]?.kind || "custom",
         }),
@@ -463,6 +602,7 @@ createApp({
       testTarget.value = null;
       if (domain === "search") loadSearchForm();
       if (domain === "mcp") loadMcpServers();
+      if (domain === "mcptools" && mcpToolsServerId.value) loadMcpTools();
     }
 
     // ===== 素材生成（创意方案 + 视频统一） =====
@@ -1054,6 +1194,61 @@ createApp({
       } catch (err) { alert("导出失败：" + err.message); }
     }
 
+    // ===== Phase9: MCP 业务集成（飞书推送 / 腾讯文档导出） =====
+    const auditMcpServer = ref("");
+    const auditExporting = ref(false);
+    const auditExportResult = ref(null);
+
+    async function exportAuditFeishu() {
+      if (!auditMcpServer.value || !auditMeta.record_count) return;
+      auditExporting.value = true;
+      auditExportResult.value = null;
+      try {
+        const res = await fetch("/api/audit/export/feishu", {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ server_id: auditMcpServer.value,
+                                 account: auditFilter.account || null,
+                                 days: auditFilter.days || null }),
+        });
+        const d = await res.json();
+        if (res.ok && d.ok) {
+          auditExportResult.value = { ok: true, message: `已推送 ${d.signals} 条信号` };
+        } else {
+          const detail = d.detail || d.message || d.tool_result?.error || "推送失败";
+          auditExportResult.value = { ok: false, message: `✗ ${detail}` };
+        }
+      } catch (e) {
+        auditExportResult.value = { ok: false, message: "✗ 网络错误" };
+      } finally {
+        auditExporting.value = false;
+      }
+    }
+
+    async function exportAuditDocs() {
+      if (!auditMcpServer.value || !auditMeta.record_count) return;
+      auditExporting.value = true;
+      auditExportResult.value = null;
+      try {
+        const res = await fetch("/api/audit/export/docs", {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ server_id: auditMcpServer.value,
+                                 account: auditFilter.account || null,
+                                 days: auditFilter.days || null }),
+        });
+        const d = await res.json();
+        if (res.ok && d.ok) {
+          auditExportResult.value = { ok: true, message: `已导出《${d.title}》` };
+        } else {
+          const detail = d.detail || d.tool_result?.error || "导出失败";
+          auditExportResult.value = { ok: false, message: `✗ ${detail}` };
+        }
+      } catch (e) {
+        auditExportResult.value = { ok: false, message: "✗ 网络错误" };
+      } finally {
+        auditExporting.value = false;
+      }
+    }
+
     async function refreshAudit() {
       await loadAuditMeta();
       await loadAuditTagLibrary();
@@ -1367,6 +1562,10 @@ createApp({
       searchForm, spm, saveSearchConfig, testSearchConnection, searchKeyHint,
       // MCP 服务器配置
       mcpServers, mcpEdit, mcpPresets, mcpAddPreset, mcpServerPresetEnv,
+      // MCP 工具调用（Phase9）
+      mcpToolsServerId, mcpTools, mcpToolsLoading, mcpToolsError, activeMcpTool, mcpParamFields,
+      mcpArgs, mcpCalling, mcpCallError, mcpResult,
+      loadMcpTools, selectMcpTool, callMcpTool,
       addMcpServer, addCustomMcpServer, saveMcpServer, deleteMcpServer, toggleMcpServer, testMcpServer,
       wfInput, wfDragOver, wfFile, wfRunning, wfResult, wfStep, wfSteps, wfStepState, handleWfDrop, runWorkflow,
       // 广告账户审计
@@ -1375,7 +1574,7 @@ createApp({
       auditLoading, auditFilter, auditChartType, auditTrendChart, auditAccountChart,
       auditMetricCards, severityLabel, severityBadge, fmtNum, fmtMoney,
       loadAuditAll, switchAuditChart, onAuditFileSelect, generateAuditSample, clearAuditData,
-      exportAuditExcel,
+      exportAuditExcel, auditMcpServer, auditExporting, auditExportResult, exportAuditFeishu, exportAuditDocs,
       // Phase3: 信号规则开关
       signalCategoryLabel, ruleCategoryLabel, toggleAuditRule, resetAuditRules, setRuleMethod,
       // Phase4: 多维透视

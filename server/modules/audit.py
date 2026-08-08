@@ -28,6 +28,7 @@ import json
 import random
 import statistics
 import threading
+import time
 from collections import defaultdict
 from datetime import date, datetime, timedelta
 from pathlib import Path
@@ -1339,6 +1340,66 @@ class AuditService:
                 "sample": r.get("sample", False),
             })
         return {"records": result, "total": total, "limit": limit, "offset": offset}
+
+    def build_report_text(self, account: Optional[str] = None, days: Optional[int] = None) -> str:
+        """生成 Markdown 审计报告（供 MCP 业务集成导出，Phase9）
+        结构：概览（指标/健康分）→ 异常信号 → 账户对比（如有）
+        """
+        summary = self.summary(account=account, days=days)
+        metrics = summary.get("metrics", {})
+        health = summary.get("health", {})
+        signals = self.detect_signals()
+        day_str = f"近 {days} 天" if days else "全部时间"
+        acct_str = f"账户「{account}」" if account else "全部账户"
+
+        def fmt(v):
+            if isinstance(v, float):
+                return f"{v:.2f}"
+            return str(v)
+
+        lines = [
+            f"# 广告账户审计报告",
+            "",
+            f"> {acct_str} · {day_str} · 生成时间 {time.strftime('%Y-%m-%d %H:%M')}",
+            "",
+            "## 一、数据概览",
+            "",
+            f"- 覆盖账户：**{metrics.get('account_count', 0)}** 个",
+            f"- 覆盖天数：**{metrics.get('day_count', 0)}** 天",
+            f"- 数据行数：**{metrics.get('record_count', 0)}** 条",
+        ]
+        for k, label in (("total_spend", "总花费"), ("total_impressions", "总曝光"),
+                         ("total_clicks", "总点击"), ("total_conversions", "总转化")):
+            if k in metrics:
+                lines.append(f"- {label}：**{fmt(metrics[k])}**")
+        for k, label in (("ctr", "平均 CTR"), ("cvr", "平均 CVR"), ("cpa", "平均 CPA"), ("roas", "平均 ROAS")):
+            if k in metrics:
+                lines.append(f"- {label}：**{fmt(metrics[k])}**")
+
+        lines += ["", "## 二、健康评分", ""]
+        if health:
+            lines.append(f"- 健康分：**{health.get('score', '-')}/100**（{health.get('level', '')}）")
+            for k, v in (health.get("breakdown") or {}).items():
+                lines.append(f"  - {k}：{v}")
+        lines.append(f"- 异常信号：**{summary.get('anomaly_count', 0)}** 条"
+                     f"（高 {summary.get('anomaly_by_severity', {}).get('high', 0)} / "
+                     f"中 {summary.get('anomaly_by_severity', {}).get('medium', 0)} / "
+                     f"低 {summary.get('anomaly_by_severity', {}).get('low', 0)}）")
+
+        medium_high = [s for s in signals if s.get("severity") in (SEV_CRITICAL, SEV_HIGH, SEV_MEDIUM)]
+        lines += ["", "## 三、异常信号", ""]
+        if not medium_high:
+            lines.append("无中/高风险信号，投放健康。")
+        for s in medium_high[:10]:
+            lines.append(f"- **[{s.get('severity', '').upper()}]** {s.get('account', '') or ''} · {s.get('category', '')}")
+            lines.append(f"  - {s.get('description', '')}")
+            if s.get("impact"):
+                lines.append(f"  - 影响：{s.get('impact')}")
+            if s.get("suggestion"):
+                lines.append(f"  - 建议：{s.get('suggestion')}")
+
+        lines += ["", "---", "由 AdToEarn WebUI 自动生成"]
+        return "\n".join(lines)
 
 
 # 全局单例
