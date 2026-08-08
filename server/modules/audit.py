@@ -73,6 +73,7 @@ class AuditService:
     def __init__(self):
         self._lock = threading.Lock()
         self._data_file: Path = settings.audit_data_file
+        self._history_dir: Path = settings.audit_data_file.parent / "audit_history"
 
     # ==================== 数据读写 ====================
     def _load(self) -> list:
@@ -95,11 +96,101 @@ class AuditService:
 
     # ==================== 数据管理 ====================
     def clear(self) -> dict:
-        """清空全部审计数据"""
+        """清空全部审计数据（清空前自动归档快照）"""
         with self._lock:
+            records = self._load()
+            if records:
+                self._archive_snapshot("clear")
             self._save([])
         log_collector.info(EVENT_CONFIG, "审计数据已清空")
         return {"ok": True, "count": 0}
+
+    # ==================== 快照归档（Phase11：稀疏时序） ====================
+    def _archive_snapshot(self, reason: str) -> Optional[str]:
+        """归档当前数据为历史快照（导入/打标/清空前自动调用）
+        返回快照 id；数据为空或归档失败返回 None
+        """
+        records = self._load()
+        if not records:
+            return None
+        accounts = sorted({r.get("mapped", {}).get("account", "") for r in records if r.get("mapped", {}).get("account")})
+        dates = sorted(r.get("mapped", {}).get("date", "") for r in records if r.get("mapped", {}).get("date"))
+        snapshot = {
+            "imported_at": datetime.now().isoformat(timespec="seconds"),
+            "reason": reason,
+            "record_count": len(records),
+            "accounts": accounts,
+            "date_range": [dates[0], dates[-1]] if dates else [],
+            "records": records,
+        }
+        try:
+            sid = datetime.now().strftime("%Y%m%d_%H%M%S")
+            self._history_dir.mkdir(parents=True, exist_ok=True)
+            (self._history_dir / f"{sid}.json").write_text(
+                json.dumps(snapshot, ensure_ascii=False), encoding="utf-8")
+            self._prune_snapshots()
+            log_collector.info(EVENT_CONFIG, f"审计快照已归档: {sid}（{reason}，{len(records)} 条）")
+            return sid
+        except OSError:
+            return None
+
+    def list_snapshots(self) -> list:
+        """列出全部历史快照元信息（按时间倒序）"""
+        if not self._history_dir.exists():
+            return []
+        out = []
+        for f in sorted(self._history_dir.glob("*.json"), reverse=True):
+            try:
+                d = json.loads(f.read_text(encoding="utf-8"))
+                out.append({
+                    "id": f.stem,
+                    "imported_at": d.get("imported_at", ""),
+                    "reason": d.get("reason", ""),
+                    "record_count": d.get("record_count", 0),
+                    "accounts": d.get("accounts", []),
+                    "date_range": d.get("date_range", []),
+                })
+            except (json.JSONDecodeError, OSError):
+                continue
+        return out
+
+    def load_snapshot(self, sid: str) -> Optional[dict]:
+        """读取快照完整内容（含 records）"""
+        try:
+            f = self._history_dir / f"{sid}.json"
+            if not f.exists():
+                return None
+            return json.loads(f.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError):
+            return None
+
+    def delete_snapshot(self, sid: str) -> bool:
+        try:
+            f = self._history_dir / f"{sid}.json"
+            if not f.exists():
+                return False
+            f.unlink()
+            log_collector.info(EVENT_CONFIG, f"审计快照已删除: {sid}")
+            return True
+        except OSError as e:
+            log_collector.warn(EVENT_CONFIG, f"删除快照失败({sid}): {e}")
+            return False
+
+    def _prune_snapshots(self, keep: int = 30):
+        """自动裁剪：只保留最近 keep 份快照，防膨胀"""
+        try:
+            if not self._history_dir.exists():
+                return
+            files = sorted(self._history_dir.glob("*.json"), reverse=True)
+            for f in files[keep:]:
+                f.unlink()
+        except OSError:
+            pass
+
+    def _load_snapshot_records(self, sid: str) -> list:
+        """读取快照中的 records（供 advisor 序列分析用）"""
+        snap = self.load_snapshot(sid)
+        return snap.get("records", []) if snap else []
 
     def get_meta(self) -> dict:
         """数据元信息：记录数 / 账户列表 / 时间范围 / 是否含示例数据 / 原始字段列表"""
@@ -124,6 +215,7 @@ class AuditService:
             "raw_fields": raw_fields,
             "metric_meta": METRIC_META,
             "severity_labels": SEV_LABELS,
+            "has_creative": any(r.get("mapped", {}).get("creative") for r in records),  # Phase11
         }
 
     def import_records(self, records: list, source: str = "upload") -> dict:
@@ -149,6 +241,7 @@ class AuditService:
         if not normalized:
             return {"ok": False, "imported": 0, "errors": errors or [{"row": 1, "error": "未解析到有效数据，请检查列名与格式"}]}
         with self._lock:
+            self._archive_snapshot("import")  # Phase11: 导入前归档旧数据
             self._save(normalized)
         log_collector.info(EVENT_CONFIG, f"审计数据导入成功: {len(normalized)} 条", {
             "source": source, "errors": len(errors),
@@ -191,6 +284,11 @@ class AuditService:
         except ValueError:
             raise ValueError(f"日期格式无效: {mapped['date']}（应为 YYYY-MM-DD）")
         mapped["account"] = str(mapped["account"]).strip() or "未分组账户"
+        # Phase11: 素材名清洗（可选字段；无则 None）
+        if mapped.get("creative"):
+            mapped["creative"] = str(mapped["creative"]).strip()
+            if not mapped["creative"]:
+                del mapped["creative"]
 
         # 数值字段：清洗 + 类型转换
         for num_field in ("impressions", "clicks", "conversions", "spend", "conversion_value"):
@@ -1234,6 +1332,7 @@ class AuditService:
                     "sample": True,
                 })
         with self._lock:
+            self._archive_snapshot("sample")  # Phase11: 变更前归档
             self._save(records)
         log_collector.info(EVENT_SYSTEM, f"已生成审计示例数据: {len(records)} 条 / {len(accounts)} 账户 / {days} 天")
         return {"ok": True, "imported": len(records), "sample": True}
@@ -1316,6 +1415,7 @@ class AuditService:
                                 existing.append(t)
                         rec["tags"][group_id] = existing
                     tagged_count += 1
+            self._archive_snapshot("tag")  # Phase11: 变更前归档
             self._save(records)
         log_collector.info(EVENT_CONFIG, f"批量打标: {tagged_count} 行 / 组={group_id} / 模式={mode}", {
             "row_count": tagged_count, "group": group_id, "tags": tags, "mode": mode,

@@ -753,6 +753,10 @@ createApp({
     const auditSignals = ref([]);          // 数据信号（统一 schema）
     const auditRules = ref({});            // 信号规则 + 启用状态
     const showRulePanel = ref(false);      // 规则配置面板开关
+    // Phase11: 决策建议（可解释建议卡 + 快照计数）
+    const auditSuggestions = ref([]);
+    const auditSnapshotCount = ref(0);
+    const auditSuggestionsLoading = ref(false);
     // Phase4: 多维透视
     const auditPivotDims = ref([]);        // 选择的维度（标签组 ID）
     const auditPivotMetric = ref("spend"); // 排序指标
@@ -1301,10 +1305,29 @@ createApp({
     async function refreshAudit() {
       await loadAuditMeta();
       await loadAuditTagLibrary();
+      await loadAuditAdvisor();
       if (auditMeta.record_count) {
         await loadAuditAll();
         auditRecordOffset.value = 0;
         await loadAuditRecords();
+      }
+    }
+
+    // Phase11: 决策建议 + 快照计数
+    async function loadAuditAdvisor() {
+      auditSuggestionsLoading.value = true;
+      try {
+        const params = new URLSearchParams();
+        if (auditFilter.account) params.set("account", auditFilter.account);
+        if (auditFilter.days) params.set("days", auditFilter.days);
+        const qs = params.toString() ? "?" + params : "";
+        const d = await (await fetch(`/api/audit/advisor/suggestions${qs}`)).json();
+        auditSuggestions.value = d.suggestions || [];
+        auditSnapshotCount.value = d.snapshot_count || 0;
+      } catch (e) {
+        auditSuggestions.value = [];
+      } finally {
+        auditSuggestionsLoading.value = false;
       }
     }
 
@@ -1626,6 +1649,8 @@ createApp({
       auditMetricCards, severityLabel, severityBadge, fmtNum, fmtMoney,
       loadAuditAll, switchAuditChart, onAuditFileSelect, generateAuditSample, clearAuditData,
       exportAuditExcel, auditMcpServer, auditExporting, auditExportResult, exportAuditFeishu, exportAuditDocs,
+      // Phase11: 决策建议
+      auditSuggestions, auditSnapshotCount, auditSuggestionsLoading, loadAuditAdvisor,
       // Phase3: 信号规则开关
       signalCategoryLabel, ruleCategoryLabel, toggleAuditRule, resetAuditRules, setRuleMethod,
       // Phase4: 多维透视

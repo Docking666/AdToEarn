@@ -327,6 +327,11 @@ audit:
         unit: "¥"
         required: false
         warn: ""
+      creative:
+        label: "素材名"
+        unit: ""
+        required: false
+        warn: "可选：用于素材级显著性检验与生命周期分析；无此列时回退到打标组聚合"
     # 预置中英文同义词字典（业界主流平台字段别名）
     # 格式：标准字段: [别名列表]；用户纠正过的映射会自动追加到此字典的"用户扩展"区
     synonyms:
@@ -408,6 +413,17 @@ audit:
         - "order_value"
         - "GMV"
         - "转化收入"
+      creative:
+        - "素材名"
+        - "素材名称"
+        - "创意"
+        - "创意名"
+        - "创意名称"
+        - "creative"
+        - "creative_name"
+        - "ad_name"
+        - "ad_name_lower"
+        - "素材"
         - "订单金额"
     # 用户扩展同义词（运行时自动学习用户纠正的映射，初始为空）
     user_synonyms: {}
@@ -591,6 +607,19 @@ audit:
   # 多维透视（Phase4）
   # 按标签组组合聚合：dimensions=[tag_group_id, ...] → 各组合的 sum/avg 指标
   # ------------------------------------------------------------
+  # ==================== Phase11: 决策建议引擎（advisor） ====================
+  # 基于 CSV 快照的决策支持：截面（显著性/排名）+ 序列（环比/突变/衰减）+ 策略（预算/出价）
+  advisor:
+    min_sample_creative: 200        # 素材显著性检验最小曝光样本（低于则拒绝输出并写 data_gap）
+    min_snapshot_interval_days: 3   # 相邻快照最小间隔（低于视为同一期）
+    max_snapshot_gap_days: 30       # 超过视为数据过旧，置信降级
+    roas_threshold: 1.0             # ROAS 健康阈值
+    consecutive_snapshots: 2        # 预算建议需连续 N 快照 ROAS<阈值
+    budget_cut_pct: 30              # 预算下调幅度建议
+    ctr_drop_pct: 20                # 素材 CTR 跨快照下降幅度阈值（衰减判断）
+    spend_share_threshold: 40       # 单渠道/账户花费占比阈值（占比异常）
+    max_suggestions: 8              # 单次输出建议上限
+    valid_until_days: 14            # 建议默认有效期（天）
   pivot:
     # 透视聚合的指标（可透视字段）
     metrics: ["spend", "conversions", "impressions", "clicks", "conversion_value"]

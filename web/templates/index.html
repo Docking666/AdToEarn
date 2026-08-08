@@ -1039,7 +1039,33 @@
                             <p class="audit-anomaly-metrics" v-if="s.metrics && Object.keys(s.metrics).length">
                                 <span v-for="(v, k) in s.metrics" :key="k" class="audit-metric-chip">{{ k }}: {{ v }}</span>
                             </p>
-                            <p class="audit-anomaly-sug">💡 {{ s.suggestion }}</p>
+                            <p class="audit-anomaly-sug">{{ s.suggestion }}</p>
+                        </div>
+                    </div>
+
+                    <!-- Phase11: 决策建议（可解释建议卡，支持人决策） -->
+                    <div class="audit-chart-card">
+                        <div class="audit-chart-head">
+                            <h3>决策建议（{{ auditSuggestions.length }} 条 · 数据快照 {{ auditSnapshotCount }} 份）</h3>
+                            <button class="btn small" :disabled="auditSuggestionsLoading" @click="loadAuditAdvisor()">
+                                {{ auditSuggestionsLoading ? '生成中…' : '刷新建议' }}
+                            </button>
+                        </div>
+                        <p v-if="auditSnapshotCount >= 2" class="env-hint">已积累 {{ auditSnapshotCount }} 份历史快照，序列建议（环比 / 突变 / 素材衰减）已解锁</p>
+                        <p v-else-if="auditSnapshotCount === 1" class="env-hint">已积累 1 份历史快照：当前为截面对比建议；再导入 1 次数据将解锁序列建议</p>
+                        <div v-if="!auditSuggestions.length" class="audit-ok-state">
+                            <span v-if="auditSuggestionsLoading">正在生成建议…</span>
+                            <span v-else>暂无建议：数据不足或当前投放状态健康（建议由确定性规则生成，可复算）</span>
+                        </div>
+                        <div v-for="s in auditSuggestions" :key="s.id" class="audit-suggestion-card">
+                            <div class="audit-suggestion-head">
+                                <span class="badge" :class="'sug-' + s.type">{{ s.type }}</span>
+                                <strong>{{ s.title }}</strong>
+                                <span class="badge" :class="'conf-' + s.confidence">置信度 {{ s.confidence }}</span>
+                            </div>
+                            <p class="audit-suggestion-action">→ {{ s.action }}</p>
+                            <p class="audit-anomaly-metrics"><span class="audit-metric-chip">依据: {{ s.evidence }}</span></p>
+                            <p v-if="s.data_gap" class="env-hint">数据缺口: {{ s.data_gap }}</p>
                         </div>
                     </div>
                 </template>

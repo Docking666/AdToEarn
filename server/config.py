@@ -217,6 +217,11 @@ class Settings:
         """健康评分配置 (来自 spec)"""
         return spec.get("audit", "health_score", default={})
 
+    @property
+    def audit_advisor(self) -> dict:
+        """决策建议引擎配置 (来自 spec，Phase11)"""
+        return spec.get("audit", "advisor", default={})
+
     # ------- 反向解析 -------
     video_frames: int = spec.get("reverse_parser", "video_frames", default=4)
     analysis_prompt_path: Path = BASE_DIR / spec.get(

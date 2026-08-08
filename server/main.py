@@ -735,6 +735,30 @@ async def audit_records(account: Optional[str] = None, days: Optional[int] = Non
     return {"records": records[-limit:], "total": len(records)}
 
 
+# ==================== 审计快照（Phase11：稀疏时序基础） ====================
+
+@app.get("/api/audit/snapshots")
+async def audit_snapshots():
+    """列出历史数据快照（每次导入/打标/清空前自动归档）"""
+    return {"snapshots": audit_service.list_snapshots()}
+
+
+@app.delete("/api/audit/snapshots/{sid}")
+async def audit_snapshot_delete(sid: str):
+    """删除指定历史快照"""
+    if not audit_service.delete_snapshot(sid):
+        raise HTTPException(status_code=404, detail=f"快照 {sid} 不存在")
+    return {"ok": True}
+
+
+@app.get("/api/audit/advisor/suggestions")
+async def audit_advisor_suggestions(account: Optional[str] = None, days: Optional[int] = None):
+    """决策建议卡（Phase11：截面/序列/策略三层建议，可解释+置信度+有效期）"""
+    from .modules.audit_advisor import audit_advisor
+
+    return audit_advisor.generate_suggestions(account=account, days=days)
+
+
 @app.post("/api/audit/import")
 async def audit_import(req: AuditImportRequest):
     """导入投放记录（JSON 数组）"""
