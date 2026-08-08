@@ -48,7 +48,14 @@ createApp({
       });
     }
     applyTheme();
-    const switchPage = (id) => { currentPage.value = id; };
+    const switchPage = (id) => {
+      currentPage.value = id;
+      // 切走审计页时销毁 ECharts 实例（v-if 移除 DOM 后实例失效，切回会空白/报错）
+      if (id !== "audit") {
+        if (auditTrendChartInst) { try { auditTrendChartInst.dispose(); } catch (e) {} auditTrendChartInst = null; }
+        if (auditAccountChartInst) { try { auditAccountChartInst.dispose(); } catch (e) {} auditAccountChartInst = null; }
+      }
+    };
 
     // ===== 健康状态 =====
     const health = reactive({ ai_configured: false });
@@ -911,49 +918,63 @@ createApp({
 
     function renderAuditCharts() {
       if (!window.echarts) return;
-      // 趋势图
-      if (auditTrendChart.value) {
-        if (!auditTrendChartInst) auditTrendChartInst = echarts.init(auditTrendChart.value);
-        const dates = auditTrend.value.map(t => t.date);
-        const type = auditChartType.value;
-        const series = type === "volume" ? [
-          { name: "曝光量", type: "bar", data: auditTrend.value.map(t => t.impressions), itemStyle: { color: "#6366f1" } },
-          { name: "点击量", type: "line", smooth: true, data: auditTrend.value.map(t => t.clicks), itemStyle: { color: "#34d399" } },
-          { name: "转化量", type: "line", smooth: true, data: auditTrend.value.map(t => t.conversions), itemStyle: { color: "#fbbf24" } },
-        ] : type === "cost" ? [
-          { name: "花费", type: "bar", data: auditTrend.value.map(t => t.spend), itemStyle: { color: "#f87171" } },
-          { name: "转化价值", type: "line", smooth: true, data: auditTrend.value.map(t => t.conversion_value), itemStyle: { color: "#34d399" } },
-        ] : [
-          { name: "CTR(%)", type: "line", smooth: true, data: auditTrend.value.map(t => t.ctr), itemStyle: { color: "#60a5fa" } },
-          { name: "CPA(¥)", type: "line", smooth: true, data: auditTrend.value.map(t => t.cpa), itemStyle: { color: "#f87171" } },
-          { name: "ROAS", type: "line", smooth: true, data: auditTrend.value.map(t => t.roas), itemStyle: { color: "#34d399" } },
-        ];
-        auditTrendChartInst.setOption({
-          backgroundColor: "transparent",
-          tooltip: { trigger: "axis", backgroundColor: "#1e2230", borderColor: "rgba(255,255,255,.14)", textStyle: { color: "#e6e9f2" } },
-          legend: { textStyle: { color: "#9aa3b8" }, top: 0 },
-          grid: { left: 48, right: 16, top: 36, bottom: 24 },
-          xAxis: { type: "category", data: dates, axisLine: { lineStyle: { color: "rgba(255,255,255,.14)" } }, axisLabel: { color: "#9aa3b8" } },
-          yAxis: { type: "value", splitLine: { lineStyle: { color: "rgba(255,255,255,.06)" } }, axisLabel: { color: "#9aa3b8" } },
-          series,
-        }, true);
+      // 趋势图（实例健壮化：DOM 被 v-if 重建后旧实例失效，须 dispose 后重新 init）
+      const trendEl = auditTrendChart.value;
+      if (trendEl) {
+        try {
+          if (auditTrendChartInst && (auditTrendChartInst.getDom() !== trendEl || !trendEl.isConnected)) {
+            auditTrendChartInst.dispose();
+            auditTrendChartInst = null;
+          }
+          if (!auditTrendChartInst) auditTrendChartInst = echarts.init(trendEl);
+          const dates = auditTrend.value.map(t => t.date);
+          const type = auditChartType.value;
+          const series = type === "volume" ? [
+            { name: "曝光量", type: "bar", data: auditTrend.value.map(t => t.impressions), itemStyle: { color: "#3b82f6" } },
+            { name: "点击量", type: "line", smooth: true, data: auditTrend.value.map(t => t.clicks), itemStyle: { color: "#22c55e" } },
+            { name: "转化量", type: "line", smooth: true, data: auditTrend.value.map(t => t.conversions), itemStyle: { color: "#eab308" } },
+          ] : type === "cost" ? [
+            { name: "花费", type: "bar", data: auditTrend.value.map(t => t.spend), itemStyle: { color: "#ef4444" } },
+            { name: "转化价值", type: "line", smooth: true, data: auditTrend.value.map(t => t.conversion_value), itemStyle: { color: "#22c55e" } },
+          ] : [
+            { name: "CTR(%)", type: "line", smooth: true, data: auditTrend.value.map(t => t.ctr), itemStyle: { color: "#3b82f6" } },
+            { name: "CPA(¥)", type: "line", smooth: true, data: auditTrend.value.map(t => t.cpa), itemStyle: { color: "#ef4444" } },
+            { name: "ROAS", type: "line", smooth: true, data: auditTrend.value.map(t => t.roas), itemStyle: { color: "#22c55e" } },
+          ];
+          auditTrendChartInst.setOption({
+            backgroundColor: "transparent",
+            tooltip: { trigger: "axis", backgroundColor: "#1e2230", borderColor: "rgba(255,255,255,.14)", textStyle: { color: "#e6e9f2" } },
+            legend: { textStyle: { color: "#9aa3b8" }, top: 0 },
+            grid: { left: 48, right: 16, top: 36, bottom: 24 },
+            xAxis: { type: "category", data: dates, axisLine: { lineStyle: { color: "rgba(255,255,255,.14)" } }, axisLabel: { color: "#9aa3b8" } },
+            yAxis: { type: "value", splitLine: { lineStyle: { color: "rgba(255,255,255,.06)" } }, axisLabel: { color: "#9aa3b8" } },
+            series,
+          }, true);
+        } catch (e) { console.warn("趋势图渲染失败", e); }
       }
       // 账户对比图
-      if (auditAccountChart.value) {
-        if (!auditAccountChartInst) auditAccountChartInst = echarts.init(auditAccountChart.value);
-        const accounts = auditAccounts.value;
-        auditAccountChartInst.setOption({
-          backgroundColor: "transparent",
-          tooltip: { trigger: "axis", backgroundColor: "#1e2230", borderColor: "rgba(255,255,255,.14)", textStyle: { color: "#e6e9f2" } },
-          legend: { textStyle: { color: "#9aa3b8" }, top: 0 },
-          grid: { left: 48, right: 16, top: 36, bottom: 24 },
-          xAxis: { type: "category", data: accounts.map(a => a.account), axisLine: { lineStyle: { color: "rgba(255,255,255,.14)" } }, axisLabel: { color: "#9aa3b8", interval: 0, rotate: accounts.length > 4 ? 20 : 0 } },
-          yAxis: { type: "value", splitLine: { lineStyle: { color: "rgba(255,255,255,.06)" } }, axisLabel: { color: "#9aa3b8" } },
-          series: [
-            { name: "花费(¥)", type: "bar", data: accounts.map(a => a.spend), itemStyle: { color: "#6366f1" }, barMaxWidth: 28 },
-            { name: "转化价值(¥)", type: "bar", data: accounts.map(a => a.conversion_value), itemStyle: { color: "#34d399" }, barMaxWidth: 28 },
-          ],
-        }, true);
+      const acctEl = auditAccountChart.value;
+      if (acctEl) {
+        try {
+          if (auditAccountChartInst && (auditAccountChartInst.getDom() !== acctEl || !acctEl.isConnected)) {
+            auditAccountChartInst.dispose();
+            auditAccountChartInst = null;
+          }
+          if (!auditAccountChartInst) auditAccountChartInst = echarts.init(acctEl);
+          const accounts = auditAccounts.value;
+          auditAccountChartInst.setOption({
+            backgroundColor: "transparent",
+            tooltip: { trigger: "axis", backgroundColor: "#1e2230", borderColor: "rgba(255,255,255,.14)", textStyle: { color: "#e6e9f2" } },
+            legend: { textStyle: { color: "#9aa3b8" }, top: 0 },
+            grid: { left: 48, right: 16, top: 36, bottom: 24 },
+            xAxis: { type: "category", data: accounts.map(a => a.account), axisLine: { lineStyle: { color: "rgba(255,255,255,.14)" } }, axisLabel: { color: "#9aa3b8", interval: 0, rotate: accounts.length > 4 ? 20 : 0 } },
+            yAxis: { type: "value", splitLine: { lineStyle: { color: "rgba(255,255,255,.06)" } }, axisLabel: { color: "#9aa3b8" } },
+            series: [
+              { name: "花费(¥)", type: "bar", data: accounts.map(a => a.spend), itemStyle: { color: "#2563eb" }, barMaxWidth: 28 },
+              { name: "转化价值(¥)", type: "bar", data: accounts.map(a => a.conversion_value), itemStyle: { color: "#22c55e" }, barMaxWidth: 28 },
+            ],
+          }, true);
+        } catch (e) { console.warn("账户对比图渲染失败", e); }
       }
     }
 
