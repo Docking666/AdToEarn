@@ -31,4 +31,4 @@ rapidfuzz>=3.0.0
 openpyxl>=3.1.0
 
 # Search - MCP 搜索客户端（Phase6，SearchProvider MCP 层）
-mcp>=1.2.0
+mcp>=2.0.0

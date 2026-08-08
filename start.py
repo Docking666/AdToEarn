@@ -24,8 +24,14 @@ REQUIREMENTS = BASE_DIR / "requirements.txt"
 MARKERS_DIR = BASE_DIR / ".cache" / "markers"
 PW_MARKER = MARKERS_DIR / "playwright_ok"
 
-HOST = "127.0.0.1"
-PORT = 8765
+# 主机/端口优先读 spec 配置（config.py），失败回退默认
+try:
+    from server.config import settings
+    HOST = settings.host
+    PORT = settings.port
+except Exception:
+    HOST = "127.0.0.1"
+    PORT = 8765
 
 IS_WINDOWS = sys.platform == "win32"
 BIN = "Scripts" if IS_WINDOWS else "bin"

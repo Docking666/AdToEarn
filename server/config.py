@@ -69,6 +69,7 @@ class Settings:
     port: int = spec.get("server", "port", default=8765)
     app_name: str = spec.get("app", "name", default="AdToEarn WebUI")
     app_version: str = spec.get("app", "version", default="2.0.0")
+    app_description: str = spec.get("app", "description", default="广告素材采集 · 反向解析 · 风格迁移生成")
 
     # ------- 路径 -------
     base_dir: Path = BASE_DIR

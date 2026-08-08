@@ -18,6 +18,36 @@ createApp({
       { id: "apiconfig", label: "API 配置", icon: "M12 15a3 3 0 100-6 3 3 0 000 6zm7-3a7 7 0 11-14 0 7 7 0 0114 0z" },
     ];
     const currentPage = ref("dashboard");
+
+    // ===== Phase10: 双主题（深色/浅色/跟随系统） =====
+    const themeMode = ref(localStorage.getItem("theme") || "system"); // dark | light | system
+    const themeLabel = computed(() => ({ dark: "深色", light: "浅色", system: "跟随系统" }[themeMode.value] || "跟随系统"));
+    const themeIcon = computed(() => {
+      const sun = '<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="4"/><path d="M12 2v2m0 16v2M4.9 4.9l1.4 1.4m11.4 11.4l1.4 1.4M2 12h2m16 0h2M4.9 19.1l1.4-1.4m11.4-11.4l1.4-1.4"/></svg>';
+      const moon = '<svg viewBox="0 0 24 24"><path d="M21 12.8A9 9 0 1111.2 3a7 7 0 009.8 9.8z"/></svg>';
+      const auto = '<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 3a9 9 0 000 18z" fill="currentColor" stroke="none"/></svg>';
+      return { dark: moon, light: sun, system: auto }[themeMode.value] || auto;
+    });
+
+    function applyTheme() {
+      let t = themeMode.value;
+      if (t === "system") {
+        t = window.matchMedia("(prefers-color-scheme: light)").matches ? "light" : "dark";
+      }
+      document.documentElement.setAttribute("data-theme", t);
+    }
+    function cycleTheme() {
+      themeMode.value = { dark: "light", light: "system", system: "dark" }[themeMode.value] || "dark";
+      localStorage.setItem("theme", themeMode.value);
+      applyTheme();
+    }
+    // 跟随系统时监听系统变化
+    if (window.matchMedia) {
+      window.matchMedia("(prefers-color-scheme: light)").addEventListener("change", () => {
+        if (themeMode.value === "system") applyTheme();
+      });
+    }
+    applyTheme();
     const switchPage = (id) => { currentPage.value = id; };
 
     // ===== 健康状态 =====
@@ -713,7 +743,6 @@ createApp({
     const auditSummary = ref(null);
     const auditTrend = ref([]);
     const auditAccounts = ref([]);
-    const auditAnomalies = ref([]);
     const auditSignals = ref([]);          // 数据信号（统一 schema）
     const auditRules = ref({});            // 信号规则 + 启用状态
     const showRulePanel = ref(false);      // 规则配置面板开关
@@ -813,8 +842,8 @@ createApp({
 
     // ===== 信号规则开关（Phase3） =====
     const signalCategoryLabels = {
-      surge: "🔥 突增", decay: "📉 衰减", inefficiency: "⚠️ 低效",
-      data_quality: "🛠 数据质量", shift: "🔄 权重变化", hint: "💡 提示",
+      surge: "突增", decay: "衰减", inefficiency: "低效",
+      data_quality: "数据质量", shift: "权重变化", hint: "提示",
     };
     const signalCategoryLabel = (c) => signalCategoryLabels[c] || c;
     const ruleCategoryLabel = (c) => ({ surge: "突增", decay: "衰减", inefficiency: "低效", data_quality: "数据质量", shift: "权重变化", hint: "提示" }[c] || c);
@@ -1166,7 +1195,6 @@ createApp({
         auditSummary.value = null;
         auditTrend.value = [];
         auditAccounts.value = [];
-        auditAnomalies.value = [];
         auditSignals.value = [];
         await loadAuditMeta();
       } catch (e) {}
@@ -1294,13 +1322,13 @@ createApp({
       if (!err) return "";
       if (/auth|401|403|invalid api key|authentication|api[- ]?key.*invalid/.test(err)) {
         const provider = (r?.provider || "").replace(/^native:|^api:|^mcp:/, "") || "LLM";
-        return `💡 检测到 ${provider} 的 API Key 无效或过期，请到「API 配置」核对密钥后再次保存（编辑现有配置留空密钥即可保持原值）。`;
+        return `检测到 ${provider} 的 API Key 无效或过期，请到「API 配置」核对密钥后再次保存（编辑现有配置留空密钥即可保持原值）。`;
       }
       if (/not_configured|未配置/.test(err)) {
-        return "💡 当前未配置任何可用的搜索源，请在「API 配置 → 搜索源」启用 provider 并填写 API Key，或配置 LLM 启用原生 web_search。";
+        return "当前未配置任何可用的搜索源，请在「API 配置 → 搜索源」启用 provider 并填写 API Key，或配置 LLM 启用原生 web_search。";
       }
       if (/model|deepseek-v4-flash/.test(err)) {
-        return "💡 DeepSeek 联网搜索需要 deepseek-v4-flash 模型，或启用搜索 API / MCP 直连源。";
+        return "DeepSeek 联网搜索需要 deepseek-v4-flash 模型，或启用搜索 API / MCP 直连源。";
       }
       return "";
     }
@@ -1543,6 +1571,8 @@ createApp({
     return {
       navItems, currentPage, switchPage,
       health, stats, steps,
+      // Phase10: 双主题
+      themeMode, themeLabel, themeIcon, cycleTheme,
       sources, styles, platforms,
       scrapeForm, scraping, searching, scrapeLoading, scrapeResult, scrapeMode, scrapeResultMeta,
       statusText, scrapeFailed, scrapeAuthHint, trendIcon, scrapeTrending, scrapeSearch, scrapeWebSearch, useKeyword,
@@ -1569,7 +1599,7 @@ createApp({
       addMcpServer, addCustomMcpServer, saveMcpServer, deleteMcpServer, toggleMcpServer, testMcpServer,
       wfInput, wfDragOver, wfFile, wfRunning, wfResult, wfStep, wfSteps, wfStepState, handleWfDrop, runWorkflow,
       // 广告账户审计
-      auditCsvInput, auditMeta, auditSummary, auditTrend, auditAccounts, auditAnomalies,
+      auditCsvInput, auditMeta, auditSummary, auditTrend, auditAccounts,
       auditSignals, auditRules, showRulePanel,
       auditLoading, auditFilter, auditChartType, auditTrendChart, auditAccountChart,
       auditMetricCards, severityLabel, severityBadge, fmtNum, fmtMoney,

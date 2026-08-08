@@ -684,7 +684,7 @@ class ApiConfigManager:
         try:
             start = time.time()
             async with httpx.AsyncClient(timeout=10) as client:
-                if provider_id in ("seedance", "custom") or provider_id not in ("minimax",):
+                if provider_id != "minimax":
                     # Seedance/自定义: 尝试发起最小任务验证鉴权
                     resp = await client.post(
                         f"{endpoint}/contents/generations/tasks",

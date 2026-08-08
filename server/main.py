@@ -31,7 +31,7 @@ from .modules.field_mapper import field_mapper
 # 创建 FastAPI 应用
 app = FastAPI(
     title=settings.app_name,
-    description=settings.app_description if hasattr(settings, "app_description") else "广告素材采集 · 反向解析 · 风格迁移生成",
+    description=settings.app_description,
     version=settings.app_version,
 )
 
@@ -117,7 +117,6 @@ class ApiTestRequest(BaseModel):
     # 搜索源字段也允许
     url: str = ""
     litellm_prefix: str = ""
-    base_url: str = ""
 
 
 class McpToolCallRequest(BaseModel):
@@ -236,9 +235,8 @@ async def health():
                                  else "not_configured",
             },
             "mcp": {
-                "servers": {s["id"]: ("enabled" if s.get("enabled") else "disabled")
-                             for s in api_config_manager.get_enabled_mcp_servers()} or
-                            {s["id"]: "disabled" for s in api_config_manager.get_mcp_servers().values()},
+                "servers": {sid: ("enabled" if s.get("enabled") else "disabled")
+                             for sid, s in api_config_manager.get_mcp_servers().items()},
                 "count": len(api_config_manager.get_enabled_mcp_servers()),
             },
         },
@@ -252,6 +250,13 @@ async def health():
 async def get_logs(limit: int = 200, min_level: str = LEVEL_INFO):
     """获取最近运行日志（按级别过滤）"""
     return {"logs": log_collector.get_recent(limit=limit, min_level=min_level)}
+
+
+@app.delete("/api/logs")
+async def clear_logs():
+    """清空运行日志缓冲（前端日志窗口「清空」按钮）"""
+    log_collector.clear()
+    return {"ok": True}
 
 
 @app.get("/api/logs/stream")
@@ -791,7 +796,7 @@ async def audit_fields_detect(req: AuditFieldDetectRequest):
             records = audit_service.parse_json(req.content.encode("utf-8"))
         else:
             records = audit_service.parse_csv(req.content.encode("utf-8"))
-    except (ValueError, Exception) as e:
+    except Exception as e:
         raise HTTPException(status_code=400, detail=f"解析失败: {e}")
     if not records or not isinstance(records[0], dict):
         return {"columns": [], "row_count": 0}

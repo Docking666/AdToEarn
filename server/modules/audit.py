@@ -1368,8 +1368,8 @@ class AuditService:
             f"- 覆盖天数：**{metrics.get('day_count', 0)}** 天",
             f"- 数据行数：**{metrics.get('record_count', 0)}** 条",
         ]
-        for k, label in (("total_spend", "总花费"), ("total_impressions", "总曝光"),
-                         ("total_clicks", "总点击"), ("total_conversions", "总转化")):
+        for k, label in (("spend", "总花费"), ("impressions", "总曝光"),
+                         ("clicks", "总点击"), ("conversions", "总转化")):
             if k in metrics:
                 lines.append(f"- {label}：**{fmt(metrics[k])}**")
         for k, label in (("ctr", "平均 CTR"), ("cvr", "平均 CVR"), ("cpa", "平均 CPA"), ("roas", "平均 ROAS")):
@@ -1378,7 +1378,7 @@ class AuditService:
 
         lines += ["", "## 二、健康评分", ""]
         if health:
-            lines.append(f"- 健康分：**{health.get('score', '-')}/100**（{health.get('level', '')}）")
+            lines.append(f"- 健康分：**{health.get('score', '-')}/100**（{health.get('grade', '')}）")
             for k, v in (health.get("breakdown") or {}).items():
                 lines.append(f"  - {k}：{v}")
         lines.append(f"- 异常信号：**{summary.get('anomaly_count', 0)}** 条"

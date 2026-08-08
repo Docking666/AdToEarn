@@ -4,6 +4,15 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>AdToEarn WebUI - 广告素材智能工作台</title>
+    <script>
+        // 主题防闪：首帧前设置 data-theme（localStorage > 系统偏好）
+        (function () {
+            var t = localStorage.getItem("theme");
+            var theme = t === "dark" || t === "light" ? t
+                : (window.matchMedia("(prefers-color-scheme: light)").matches ? "light" : "dark");
+            document.documentElement.setAttribute("data-theme", theme);
+        })();
+    </script>
     <link rel="stylesheet" href="/static/styles.css">
 </head>
 <body>
@@ -12,9 +21,8 @@
         <aside class="sidebar">
             <div class="logo">
                 <svg width="28" height="28" viewBox="0 0 28 28" fill="none">
-                    <rect x="2" y="2" width="24" height="24" rx="7" fill="url(#lg)"/>
+                    <rect x="2" y="2" width="24" height="24" rx="7" fill="#2563eb"/>
                     <path d="M8 14l4 4 8-8" stroke="white" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/>
-                    <defs><linearGradient id="lg" x1="0" y1="0" x2="28" y2="28"><stop stop-color="#6366f1"/><stop offset="1" stop-color="#8b5cf6"/></linearGradient></defs>
                 </svg>
                 <div class="logo-text">AdToEarn<span>WebUI</span></div>
             </div>
@@ -34,6 +42,11 @@
                 <div class="api-status">
                     <span class="dot" :class="{ online: configuredLlmCount > 0 }"></span>
                     <span>LLM: {{ configuredLlmCount > 0 ? '已配置' : '未配置' }} · 视频: {{ configuredVideoCount > 0 ? '已配置' : '未配置' }}</span>
+                </div>
+                <!-- Phase10: 主题切换（深色/浅色/跟随系统） -->
+                <div class="theme-switch" @click="cycleTheme()" :title="'主题：' + themeLabel">
+                    <span class="icon" v-html="themeIcon"></span>
+                    <span>{{ themeLabel }}</span>
                 </div>
             </div>
         </aside>
@@ -84,10 +97,10 @@
                 </header>
                 <div class="domain-tabs">
                     <button class="tab-btn" :class="{ active: scrapeMode === 'web' }" @click="scrapeMode = 'web'">
-                        🛰 联网搜索 (LLM)
+                        联网搜索 (LLM)
                     </button>
                     <button class="tab-btn" :class="{ active: scrapeMode === 'playwright' }" @click="scrapeMode = 'playwright'">
-                        🕷 Playwright 直采
+                        Playwright 直采
                     </button>
                 </div>
 
@@ -203,25 +216,25 @@
                             <span class="badge" :class="analysis.status">{{ analysis.status === 'mock' ? '模拟数据' : 'AI 分析' }}</span>
                         </div>
                         <p class="result-meta">{{ analysis.original_filename }} · {{ analysis.file_type }}</p>
-                        <div v-if="analysis.analysis['关键词']?.length" class="section">
+                        <div v-if="analysis.analysis?.['关键词']?.length" class="section">
                             <h4>提取关键词</h4>
                             <div class="keyword-cloud">
                                 <span v-for="(k, i) in analysis.analysis['关键词']" :key="i" class="keyword-tag">{{ k }}</span>
                             </div>
                         </div>
-                        <div v-if="analysis.analysis['视觉元素分析']" class="section">
+                        <div v-if="analysis.analysis?.['视觉元素分析']" class="section">
                             <h4>视觉元素分析</h4>
-                            <pre class="kv-block">{{ kvText(analysis.analysis['视觉元素分析']) }}</pre>
+                            <pre class="kv-block">{{ kvText(analysis.analysis?.['视觉元素分析']) }}</pre>
                         </div>
-                        <div v-if="analysis.analysis['AI生成Prompt']?.english" class="section">
+                        <div v-if="analysis.analysis?.['AI生成Prompt']?.english" class="section">
                             <h4>AI 生成 Prompt (EN)</h4>
                             <div class="prompt-block">{{ analysis.analysis['AI生成Prompt'].english }}</div>
                         </div>
-                        <div v-if="analysis.analysis['AI生成Prompt']?.chinese" class="section">
+                        <div v-if="analysis.analysis?.['AI生成Prompt']?.chinese" class="section">
                             <h4>AI 生成 Prompt (中文)</h4>
                             <div class="prompt-block">{{ analysis.analysis['AI生成Prompt'].chinese }}</div>
                         </div>
-                        <div v-if="analysis.analysis['风格标签']?.length" class="section">
+                        <div v-if="analysis.analysis?.['风格标签']?.length" class="section">
                             <h4>推荐风格</h4>
                             <div class="keyword-cloud">
                                 <span v-for="(s, i) in analysis.analysis['风格标签']" :key="i" class="keyword-tag style-tag" @click="selectStyleByName(s)">{{ s }}</span>
@@ -514,7 +527,7 @@
                     <div v-for="(srv, sid) in mcpServers" :key="sid" class="mcp-server-card">
                         <div class="mcp-server-head">
                             <strong>{{ srv.name || sid }}</strong>
-                            <span class="badge" :class="srv.kind === 'search' ? '' : ''">{{ srv.kind === 'search' ? '🔍 搜索' : '🔧 工具' }}</span>
+                            <span class="badge" :class="srv.kind === 'search' ? '' : ''">{{ srv.kind === 'search' ? '搜索' : '工具' }}</span>
                             <label class="toggle-switch">
                                 <input type="checkbox" :checked="srv.enabled" @change="toggleMcpServer(sid, $event)">
                                 <span>{{ srv.enabled ? '已启用' : '已停用' }}</span>
@@ -750,7 +763,7 @@
                 <!-- 数据导入工具条 -->
                 <div class="audit-toolbar">
                     <button class="btn" :disabled="auditLoading.sample" @click="generateAuditSample">
-                        {{ auditLoading.sample ? '生成中…' : '✨ 生成示例数据' }}
+                        {{ auditLoading.sample ? '生成中…' : '生成示例数据' }}
                     </button>
                     <button class="btn" :disabled="!auditMeta.record_count" @click="exportAuditExcel">📊 导出 Excel</button>
                     <!-- Phase9: MCP 业务集成（飞书/腾讯文档） -->
@@ -759,7 +772,7 @@
                         <option v-for="(srv, sid) in mcpServers" :key="sid" :value="sid">{{ srv.name || sid }}</option>
                     </select>
                     <button class="btn" :disabled="!auditMeta.record_count || !auditMcpServer" @click="exportAuditFeishu">
-                        {{ auditExporting ? '推送中…' : '✈ 飞书推送' }}
+                        {{ auditExporting ? '推送中…' : '飞书推送' }}
                     </button>
                     <button class="btn" :disabled="!auditMeta.record_count || !auditMcpServer" @click="exportAuditDocs">
                         {{ auditExporting ? '导出中…' : '📄 导出腾讯文档' }}
@@ -982,7 +995,7 @@
                         <div class="audit-chart-head">
                             <h3>数据信号（{{ auditSignals.length }} 项 · 按影响金额排序）</h3>
                             <button class="btn small" @click="showRulePanel = !showRulePanel">
-                                ⚙️ 规则配置{{ showRulePanel ? '（收起）' : '' }}
+                                规则配置{{ showRulePanel ? '（收起）' : '' }}
                             </button>
                         </div>
 
